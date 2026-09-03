@@ -56,6 +56,27 @@ function apiOrigin(url) {
     return s
 }
 
+// A private IP literal is deliberately treated differently from a hostname:
+// it is the usual configuration for a Pi-hole that is only reachable at home.
+// Keep this parser small and URL-independent so it works in both QML and Node.
+function isPrivateIPv4ApiOrigin(url) {
+    var origin = apiOrigin(url)
+    var match = origin.match(/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\/([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)(?::[0-9]+)?$/)
+    if (!match) return false
+    var octets = match[1].split(".")
+    var values = []
+    var i
+    for (i = 0; i < octets.length; i++) {
+        if (!/^[0-9]+$/.test(octets[i])) return false
+        var value = Number(octets[i])
+        if (!isFinite(value) || value < 0 || value > 255) return false
+        values.push(value)
+    }
+    return values[0] === 10
+        || (values[0] === 172 && values[1] >= 16 && values[1] <= 31)
+        || (values[0] === 192 && values[1] === 168)
+}
+
 function passwordFile(value) {
     var s = trim(value)
     return s === "" ? DEFAULT_PASSWORD_FILE : s
@@ -205,13 +226,14 @@ function barColorRole(snapshot, nowSec) {
     return "muted"
 }
 
-function headerStatus(snapshot, nowSec) {
+function headerStatus(snapshot, nowSec, origin) {
     var s = displayState(snapshot, nowSec)
     if (s === "enabled") return "Blocking on"
     if (s === "paused") return "Paused"
     if (s === "disabled") return "Blocking off"
     if (s === "auth") return "Auth failed"
-    if (s === "offline") return "Offline"
+    if (s === "offline")
+        return isPrivateIPv4ApiOrigin(origin) ? "Away from home" : "Offline"
     if (s === "failed") return "Failed"
     return "Not configured"
 }
@@ -358,6 +380,7 @@ if (typeof module !== "undefined") {
         parseBool: parseBool,
         parseNumber: parseNumber,
         apiOrigin: apiOrigin,
+        isPrivateIPv4ApiOrigin: isPrivateIPv4ApiOrigin,
         passwordFile: passwordFile,
         refreshSeconds: refreshSeconds,
         barMetric: barMetric,

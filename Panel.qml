@@ -25,7 +25,10 @@ Panel {
     readonly property var sparkBars: Model.bucketHistory(snapshot ? snapshot.history : null)
     readonly property var blockedList: Model.recentBlocked(snapshot)
     readonly property string hostName: hostWidget ? hostWidget.hostName : ""
+    readonly property string apiOrigin: hostWidget ? hostWidget.apiOrigin : ""
     readonly property bool showSetup: shownState === "unconfigured" || shownState === "auth"
+    readonly property bool awayFromHome: shownState === "offline"
+        && Model.isPrivateIPv4ApiOrigin(apiOrigin)
     readonly property bool helperBusy: hostWidget ? hostWidget.helperBusy === true : false
     readonly property var pingResult: hostWidget ? hostWidget.lastPing : null
     readonly property bool pinging: hostWidget ? hostWidget.pinging === true : false
@@ -251,7 +254,7 @@ Panel {
 
                             Text {
                                 textFormat: Text.PlainText
-                                text: Model.headerStatus(root.snapshot, root.nowSec)
+                                text: Model.headerStatus(root.snapshot, root.nowSec, root.apiOrigin)
                                 color: root.holeOpen ? root.urgentFg : root.barForeground
                                 font.family: root.bar ? root.bar.fontFamily : Style.font.family
                                 font.pixelSize: Style.font.body
@@ -296,6 +299,17 @@ Panel {
                                 onClicked: if (root.hostWidget) root.hostWidget.openDashboard()
                             }
                         }
+                    }
+
+                    Text {
+                        visible: root.awayFromHome
+                        width: parent.width
+                        wrapMode: Text.WordWrap
+                        textFormat: Text.PlainText
+                        text: "Your home Pi-hole is unavailable from this network. Showing last-known data."
+                        color: root.barForeground
+                        font.family: root.bar ? root.bar.fontFamily : Style.font.family
+                        font.pixelSize: Style.font.bodySmall
                     }
 
                     Text {

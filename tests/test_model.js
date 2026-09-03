@@ -84,6 +84,43 @@ test("dashboardUrl falls back to origin + /admin/", () => {
   assert.equal(Model.hostLabel("http://pi.hole:8080/admin"), "pi.hole:8080");
 });
 
+test("isPrivateIPv4ApiOrigin recognizes only RFC1918 IPv4 API origins", () => {
+  for (const origin of [
+    "http://10.0.0.1",
+    "https://10.255.255.255:8443",
+    "http://172.16.0.1",
+    "http://172.31.255.255",
+    "https://192.168.0.1",
+    "https://192.168.255.255/admin/"
+  ]) assert.equal(Model.isPrivateIPv4ApiOrigin(origin), true, origin);
+
+  for (const origin of [
+    "http://9.255.255.255",
+    "http://11.0.0.0",
+    "http://172.15.255.255",
+    "http://172.32.0.0",
+    "http://192.167.255.255",
+    "http://192.169.0.0",
+    "http://192.168.1.256",
+    "https://pi.hole",
+    "https://100.64.0.1",
+    "https://pi.tailnet.ts.net"
+  ]) assert.equal(Model.isPrivateIPv4ApiOrigin(origin), false, origin);
+});
+
+test("private offline snapshots use away-from-home copy only", () => {
+  const offline = { state: "offline", error: "Connection timed out" };
+  assert.equal(
+    Model.headerStatus(offline, 0, "https://192.168.1.2"),
+    "Away from home"
+  );
+  for (const origin of ["https://pi.hole", "https://203.0.113.10", "https://pi.tailnet.ts.net"]) {
+    assert.equal(Model.headerStatus(offline, 0, origin), "Offline", origin);
+  }
+  assert.equal(Model.headerStatus({ state: "auth" }, 0, "https://192.168.1.2"), "Auth failed");
+  assert.equal(Model.headerStatus({ state: "failed" }, 0, "https://192.168.1.2"), "Failed");
+});
+
 test("sparkline buckets groups of three for 144 and 145 points", () => {
   const bars144 = Model.bucketHistory(historyPoints(144));
   assert.equal(bars144.length, 48);
