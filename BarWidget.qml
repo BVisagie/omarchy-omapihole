@@ -34,11 +34,10 @@ BarWidget {
 
     readonly property string shownState: Model.displayState(snapshot, nowSec)
     readonly property string pillLabel: Model.barLabel(snapshot, root.settings, nowSec)
-    readonly property string pillText: {
-        if (root.vertical)
-            return pillLabel === "" ? Model.SHIELD_GLYPH : (Model.SHIELD_GLYPH + "\n" + pillLabel)
-        return pillLabel === "" ? Model.SHIELD_GLYPH : (Model.SHIELD_GLYPH + " " + pillLabel)
-    }
+    // The mark's knob sits right only while blocking is known to be on.
+    // Paused/off slide it left (urgent); every "don't know" state is muted
+    // and also left, since nothing is vouching for the hole.
+    readonly property bool markOn: shownState === "enabled"
     readonly property string colorRole: Model.barColorRole(snapshot, nowSec)
     readonly property color pillColor: {
         if (colorRole === "urgent") return root.bar ? root.bar.urgent : Color.urgent
@@ -61,6 +60,11 @@ BarWidget {
 
     readonly property bool opened: panelLoader.item ? panelLoader.item.opened === true : false
     readonly property bool popoutSwitchClosing: panelLoader.item ? panelLoader.item.popoutSwitchClosing === true : false
+
+    // Bar.panelIndicatorExtent reads these so the open-panel mark tracks the
+    // painted mark + label instead of a fraction of the slot.
+    readonly property real openPanelIndicatorWidth: pill.implicitWidth
+    readonly property real openPanelIndicatorHeight: pill.implicitHeight
 
     function open() {
         if (panelLoader.item && panelLoader.item.openFromHotkey) panelLoader.item.openFromHotkey()
@@ -312,16 +316,55 @@ BarWidget {
         }
     }
 
+    // WidgetButton still owns hit-testing, the tooltip, and bar click
+    // registration. Its text label is hidden because the mark is geometry
+    // (OmaPiholeIcon), which a font-only label cannot carry; `pill` below
+    // paints mark + metric in its place.
     WidgetButton {
         id: button
         anchors.fill: parent
         bar: root.bar
-        text: root.pillText
+        labelVisible: false
+        hasVisualContent: true
         foreground: root.pillColor
-        fontSize: Style.font.body
         tooltipText: root.opened ? "" : root.tooltipBody
         horizontalMargin: 8.75
-        verticalPadding: 8.75
+        verticalPadding: 6
+        fixedWidth: vertical ? -1 : Math.round(pill.implicitWidth + scaledHorizontalMargin * 2)
+        fixedHeight: vertical ? Math.round(pill.implicitHeight + scaledVerticalPadding * 2) : -1
+
+        Grid {
+            id: pill
+            anchors.centerIn: parent
+            columns: button.vertical ? 1 : 2
+            spacing: Style.space(button.vertical ? 2 : 3)
+            horizontalItemAlignment: Grid.AlignHCenter
+            verticalItemAlignment: Grid.AlignVCenter
+
+            OmaPiholeIcon {
+                iconSize: Style.bar.iconCanvas
+                color: root.pillColor
+                on: root.markOn
+                animate: !root.bar || root.bar.foregroundAnimationEnabled
+            }
+
+            Text {
+                visible: root.pillLabel !== ""
+                textFormat: Text.PlainText
+                text: root.pillLabel
+                color: root.pillColor
+                font.family: button.fontFamily
+                font.pixelSize: button.vertical ? Style.font.caption : Style.font.body
+                renderType: Text.NativeRendering
+                horizontalAlignment: Text.AlignHCenter
+                verticalAlignment: Text.AlignVCenter
+
+                Behavior on color {
+                    enabled: !root.bar || root.bar.foregroundAnimationEnabled
+                    ColorAnimation { duration: 160 }
+                }
+            }
+        }
 
         onPressed: function (b) {
             if (root.bar) root.bar.hideTooltip(button)

@@ -1,7 +1,11 @@
+<p align="center">
+  <img src="assets/icon.png" width="128" height="128" alt="OmaPihole mark: a shield with a switch set into it">
+</p>
+
 # OmaPihole
 
 <p align="center">
-  <img src="preview.png" alt="OmaPihole in the Omarchy bar: shield, block percent, and the pause panel">
+  <img src="preview.png" alt="OmaPihole in the Omarchy bar: the mark, block percent, and the pause panel">
 </p>
 
 Pi-hole presence in the Omarchy bar: **state, pause, glance.**

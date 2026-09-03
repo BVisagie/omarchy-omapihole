@@ -14,7 +14,6 @@ var REFRESH_MAX = 120
 var DEFAULT_REFRESH = 20
 var BAR_METRICS = ["percent", "rate", "queries"]
 var PAUSE_SECONDS = [30, 300, 900]
-var SHIELD_GLYPH = "󰒃"
 
 function trim(value) {
     return String(value === null || value === undefined ? "" : value).replace(/^\s+|\s+$/g, "")
@@ -354,7 +353,6 @@ if (typeof module !== "undefined") {
         REFRESH_MIN: REFRESH_MIN,
         REFRESH_MAX: REFRESH_MAX,
         PAUSE_SECONDS: PAUSE_SECONDS,
-        SHIELD_GLYPH: SHIELD_GLYPH,
         trim: trim,
         clamp: clamp,
         parseBool: parseBool,
