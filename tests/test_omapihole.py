@@ -368,6 +368,25 @@ class HelperTests(unittest.TestCase):
         self.assertIn("chmod 600", result["error"])
         self.assertEqual(http.calls, [])
 
+    def test_symlinked_password_file_is_rejected(self):
+        target = Path(self.tmpdir.name) / "real-password"
+        target.write_text("leaked\n", encoding="utf-8")
+        os.chmod(target, 0o600)
+        self.password_path.symlink_to(target)
+        http = FakeHttp([])
+        result = self.run_cmd("status", "--bar", http=http)
+        self.assertEqual(result["state"], "auth")
+        self.assertIn("cannot read password file", result["error"])
+        self.assertEqual(http.calls, [])
+
+    def test_oversized_password_file_is_rejected(self):
+        self.write_password("x" * (self.mod.MAX_SECRET_BYTES + 1))
+        http = FakeHttp([])
+        result = self.run_cmd("status", "--bar", http=http)
+        self.assertEqual(result["state"], "auth")
+        self.assertIn("cannot read password file", result["error"])
+        self.assertEqual(http.calls, [])
+
     def test_missing_file_when_password_required(self):
         http = FakeHttp(
             [

@@ -21,6 +21,7 @@ import time
 USER_AGENT = "omapihole/0.1"
 CONNECT_TIMEOUT = "3"
 MAX_TIME = "8"
+MAX_SECRET_BYTES = 8192
 TWO_FA_MSG = "this Pi-hole has 2FA; use an app password, not the web password."
 DEFAULT_PASSWORD_FILE = "~/.config/omapihole/password"
 USAGE = "usage: omapihole status [--bar] | pause <seconds> | resume | ping"
@@ -253,6 +254,29 @@ def request(ctx, method, path, body=None, sid=None):
     return status, payload
 
 
+def _read_owned_regular_file(path, max_bytes=MAX_SECRET_BYTES):
+    """Read a secret file through one file descriptor.
+
+    Opens with O_NOFOLLOW so a symlink swapped in after a separate stat()
+    can't redirect the read, then validates the *descriptor* (not the path)
+    is a regular file owned by us before reading a bounded amount from it.
+    Raises OSError, including FileNotFoundError, on any failure.
+    """
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            raise OSError("%s is not a regular file" % path)
+        if st.st_uid != os.getuid():
+            raise OSError("%s is not owned by the current user" % path)
+        data = os.read(fd, max_bytes + 1)
+        if len(data) > max_bytes:
+            raise OSError("%s is larger than %d bytes" % (path, max_bytes))
+        return data, st
+    finally:
+        os.close(fd)
+
+
 def read_password_file(path):
     """Return (password_or_None, error_or_None).
 
@@ -260,30 +284,24 @@ def read_password_file(path):
     """
     if not path:
         return None, None
-    if not os.path.isfile(path):
-        return None, None
     try:
-        st = os.stat(path)
+        data, st = _read_owned_regular_file(path)
+    except FileNotFoundError:
+        return None, None
     except OSError as exc:
         return None, "cannot read password file at %s (%s)" % (path, exc)
     if st.st_mode & (stat.S_IRWXG | stat.S_IRWXO):
         return None, "password file is group/world-readable; chmod 600 %s" % path
-    try:
-        with open(path, "r", encoding="utf-8") as fh:
-            raw = fh.read()
-    except OSError as exc:
-        return None, "cannot read password file at %s (%s)" % (path, exc)
-    return raw.rstrip(" \t\r\n"), None
+    return data.decode("utf-8", "replace").rstrip(" \t\r\n"), None
 
 
 def load_sid(ctx):
     path = ctx["session_file"]
     try:
-        with open(path, "r", encoding="utf-8") as fh:
-            sid = fh.read().strip()
+        data, _st = _read_owned_regular_file(path)
     except OSError:
         return ""
-    return sid
+    return data.decode("utf-8", "replace").strip()
 
 
 def drop_sid(ctx):
