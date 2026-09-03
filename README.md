@@ -33,9 +33,9 @@ The widget lands in the right bar section. Requires `python3` and `curl`.
 ## Setup
 
 1. On the Pi-hole: **Settings → Web interface / API → app password**.
-2. A Pi-hole has **exactly one** app password. Generating a new one replaces the old one and drops every active session. If Home Assistant or another integration already holds it, reuse that password.
-3. Write the password to `~/.config/omapihole/password` (outside `~/.config/omarchy/`, which is what people commit to dotfiles repos) and `chmod 600` that file. Web login + TOTP will not work.
-4. Left-click the muted shield, fill in the API origin (`http://pi.hole` or `https://192.168.1.2`), and **Test connection**. Save on success, or Save explicitly.
+2. Pi-hole supports one application password. If another integration already uses it, reuse that password where appropriate instead of needlessly rotating it.
+3. Write the password to `~/.config/omapihole/password` (outside `~/.config/omarchy/`, which is what people commit to dotfiles repos) and `chmod 600` that file. OmaPihole does not support an interactive TOTP prompt; use the Pi-hole application password when 2FA is enabled.
+4. Left-click the muted shield, fill in the API origin (prefer `https://pi.hole` or another HTTPS origin with a trusted certificate), and **Test connection**. Save on success, or Save explicitly. Use `http://` only on a trusted LAN: it sends the password and session ID without transport encryption.
 
 Passwordless / local-trust Pi-holes work with an empty or missing password file.
 
@@ -69,7 +69,7 @@ omarchy bar set bvisagie.omapihole refreshSeconds 20 --json
 | `url` | `""` | API origin, no trailing path. Empty → unconfigured. |
 | `dashboardUrl` | `""` | Optional right-click / ↗ target when the UI is not on the API host. |
 | `passwordFile` | `~/.config/omapihole/password` | App password file. Mode 600 required if the file exists. |
-| `allowInsecure` | `false` | Skip TLS verification for self-signed LAN HTTPS. |
+| `allowInsecure` | `false` | Skip TLS verification for self-signed LAN HTTPS. Prefer installing the Pi-hole CA instead. |
 | `refreshSeconds` | `20` | Bar poll interval, 10–120. |
 | `barMetric` | `percent` | Bar label while blocking is on: `percent`, `rate` (q/min), or `queries`. Overridden by pause/off. |
 

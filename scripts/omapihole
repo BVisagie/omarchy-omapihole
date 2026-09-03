@@ -558,23 +558,10 @@ def collect_status(ctx, full):
 
 
 def collect_ping(ctx):
-    summary = api(ctx, "GET", "/api/stats/summary")
-    try:
-        blocking = api(ctx, "GET", "/api/dns/blocking")
-        state, is_blocking, timer = map_blocking(blocking)
-    except HelperError:
-        state, is_blocking, timer = "enabled", True, None
-    return envelope(
-        state,
-        ok=True,
-        error=None,
-        blocking=is_blocking,
-        timer=timer,
-        queries=map_queries(summary),
-        gravity=map_gravity(summary),
-        history=None,
-        recent_blocked=[],
-    )
+    # Setup must verify the same endpoints the widget uses. Reporting a
+    # successful connection after only the summary endpoint works can leave a
+    # user with a widget that cannot show or control blocking state.
+    return collect_status(ctx, full=False)
 
 
 def do_pause(ctx, seconds):
