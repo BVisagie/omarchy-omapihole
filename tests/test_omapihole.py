@@ -181,6 +181,19 @@ class HelperTests(unittest.TestCase):
         self.assertEqual(result["history"][0]["t"], 1770000000)
         self.assertEqual(result["recent_blocked"][0], "tracker.example.com")
 
+    def test_ping_fails_when_blocking_endpoint_is_unavailable(self):
+        http = FakeHttp(
+            [
+                {"status": 200, "json": fixture("auth_valid_passwordless.json")},
+                {"status": 200, "json": fixture("summary.json")},
+                {"status": 500, "json": {"error": {"message": "blocking unavailable"}}},
+            ]
+        )
+        result = self.run_cmd("ping", http=http)
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["state"], "failed")
+        self.assertEqual(result["error"], "blocking unavailable")
+
     def test_pause_payload_and_bar_shape(self):
         self.write_password()
         http = FakeHttp(
