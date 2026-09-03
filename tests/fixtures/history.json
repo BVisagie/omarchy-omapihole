@@ -1,0 +1,11 @@
+{
+  "history": [
+    { "timestamp": 1770000000, "total": 10, "cached": 2, "blocked": 3, "forwarded": 5 },
+    { "timestamp": 1770000600, "total": 20, "cached": 4, "blocked": 6, "forwarded": 10 },
+    { "timestamp": 1770001200, "total": 12, "cached": 1, "blocked": 4, "forwarded": 7 },
+    { "timestamp": 1770001800, "total": 8, "cached": 2, "blocked": 1, "forwarded": 5 },
+    { "timestamp": 1770002400, "total": 30, "cached": 6, "blocked": 9, "forwarded": 15 },
+    { "timestamp": 1770003000, "total": 18, "cached": 3, "blocked": 5, "forwarded": 10 }
+  ],
+  "took": 0.001
+}

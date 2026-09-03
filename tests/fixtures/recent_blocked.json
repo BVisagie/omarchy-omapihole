@@ -1,0 +1,8 @@
+{
+  "blocked": [
+    "tracker.example.com",
+    "ads.foo.net",
+    "telemetry.bar.dev"
+  ],
+  "took": 0.0002
+}

@@ -1,0 +1,682 @@
+#!/usr/bin/env python3
+"""OmaPihole helper: the only process that talks to Pi-hole.
+
+QML never sees a SID or the app password. This script reads a mode-600
+password file, keeps a SID under ~/.local/state/omapihole/, and prints one
+JSON object to stdout. Exit 0 on logical errors (ok: false). Non-zero only
+for usage errors.
+"""
+
+from __future__ import annotations
+
+import fcntl
+import json
+import os
+import stat
+import subprocess
+import sys
+import tempfile
+import time
+
+USER_AGENT = "omapihole/0.1"
+CONNECT_TIMEOUT = "3"
+MAX_TIME = "8"
+TWO_FA_MSG = "this Pi-hole has 2FA; use an app password, not the web password."
+DEFAULT_PASSWORD_FILE = "~/.config/omapihole/password"
+USAGE = "usage: omapihole status [--bar] | pause <seconds> | resume | ping"
+
+
+class HelperError(Exception):
+    def __init__(self, state, error, extra=None):
+        self.state = state
+        self.error = error
+        self.extra = extra or {}
+        super().__init__(error)
+
+
+class AuthError(HelperError):
+    def __init__(self, error):
+        super().__init__("auth", error)
+
+
+class OfflineError(HelperError):
+    def __init__(self, error):
+        super().__init__("offline", error)
+
+
+class FailedError(HelperError):
+    def __init__(self, error):
+        super().__init__("failed", error)
+
+
+# Tests replace this. Production talks to curl.
+def http_exchange(method, url, headers, body, insecure):
+    """Return (status:int|None, text:str, error:str|None).
+
+    status is None on a transport failure (timeout, TLS, refused).
+    """
+    cmd = [
+        "curl",
+        "-sS",
+        "-X",
+        method,
+        "--connect-timeout",
+        CONNECT_TIMEOUT,
+        "--max-time",
+        MAX_TIME,
+        "-w",
+        "\n%{http_code}",
+    ]
+    if insecure:
+        cmd.append("-k")
+    for key, value in headers.items():
+        cmd.extend(["-H", "%s: %s" % (key, value)])
+    if body is not None:
+        cmd.extend(["-H", "Content-Type: application/json"])
+        payload = body if isinstance(body, str) else json.dumps(body)
+        cmd.extend(["--data-binary", "@-"])
+    else:
+        payload = None
+    cmd.append(url)
+
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, input=payload)
+    except FileNotFoundError:
+        return None, "", "curl not found"
+    except OSError as exc:
+        return None, "", str(exc)
+
+    stdout = proc.stdout or ""
+    stderr = (proc.stderr or "").strip()
+    body_text, sep, code_s = stdout.rpartition("\n")
+    if not sep:
+        body_text, code_s = "", stdout.strip()
+
+    status = None
+    if code_s.isdigit():
+        status = int(code_s)
+        if status == 0:
+            status = None
+
+    if status is None:
+        return None, body_text, classify_curl(proc.returncode, stderr)
+
+    return status, body_text, None
+
+
+def classify_curl(returncode, stderr):
+    if returncode == 28:
+        return "connection timed out"
+    if returncode in (51, 60):
+        return "TLS verification failed"
+    if returncode == 7:
+        return "connection refused"
+    if stderr:
+        return stderr
+    if returncode:
+        return "unreachable (curl exit %d)" % returncode
+    return "unreachable"
+
+
+def now_unix():
+    return int(time.time())
+
+
+def state_dir(env):
+    home = env.get("HOME") or os.path.expanduser("~")
+    xdg = env.get("XDG_STATE_HOME") or os.path.join(home, ".local", "state")
+    return os.path.join(xdg, "omapihole")
+
+
+def session_path(env):
+    return os.path.join(state_dir(env), "session")
+
+
+def lock_path(env):
+    return os.path.join(state_dir(env), "lock")
+
+
+def expand_path(path):
+    return os.path.abspath(os.path.expanduser(str(path or "")))
+
+
+def normalize_origin(url):
+    s = str(url or "").strip()
+    if not s:
+        return ""
+    s = s.rstrip("/")
+    for suffix in ("/admin", "/api"):
+        if s.lower().endswith(suffix):
+            s = s[: -len(suffix)].rstrip("/")
+    return s
+
+
+def parse_allow_insecure(value):
+    s = str(value or "0").strip().lower()
+    return s in ("1", "true", "yes")
+
+
+def envelope(state, error=None, ok=None, **fields):
+    out = {
+        "ok": bool(ok if ok is not None else (state in ("enabled", "paused", "disabled"))),
+        "state": state,
+        "error": error,
+        "blocking": False,
+        "timer": None,
+        "queries": None,
+        "gravity": None,
+        "history": None,
+        "recent_blocked": [],
+        "fetched_at": now_unix(),
+    }
+    if state == "enabled":
+        out["blocking"] = True
+    out.update(fields)
+    return out
+
+
+def dumps(obj):
+    return json.dumps(obj, ensure_ascii=False, separators=(",", ":"))
+
+
+def print_json(obj):
+    sys.stdout.write(dumps(obj) + "\n")
+
+
+def usage(msg=None):
+    sys.stderr.write((msg + "\n" if msg else "") + USAGE + "\n")
+    return 2
+
+
+def parse_json_body(text):
+    raw = (text or "").strip()
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        raise FailedError("malformed JSON from Pi-hole")
+    if data is None:
+        return {}
+    if not isinstance(data, dict):
+        raise FailedError("unexpected JSON from Pi-hole")
+    return data
+
+
+def error_hint(payload):
+    err = payload.get("error") if isinstance(payload, dict) else None
+    if not isinstance(err, dict):
+        return None
+    hint = err.get("hint")
+    if isinstance(hint, str) and hint.strip():
+        return hint.strip()
+    message = err.get("message")
+    if isinstance(message, str) and message.strip():
+        return message.strip()
+    key = err.get("key")
+    if isinstance(key, str) and key.strip():
+        return key.strip()
+    return None
+
+
+def error_key(payload):
+    err = payload.get("error") if isinstance(payload, dict) else None
+    if isinstance(err, dict):
+        return str(err.get("key") or "")
+    return ""
+
+
+def raise_http_error(status, payload, default="request failed"):
+    if status == 429:
+        raise AuthError(error_hint(payload) or "too many requests")
+    if status == 401:
+        raise AuthError(error_hint(payload) or "unauthorized")
+    if status is None:
+        raise OfflineError(default)
+    if status >= 500:
+        raise FailedError(error_hint(payload) or ("HTTP %d" % status))
+    raise FailedError(error_hint(payload) or ("HTTP %d" % status))
+
+
+def request(ctx, method, path, body=None, sid=None):
+    url = ctx["origin"] + path
+    headers = {
+        "User-Agent": USER_AGENT,
+        "Accept": "application/json",
+    }
+    if sid:
+        headers["X-FTL-SID"] = sid
+    status, text, terr = http_exchange(method, url, headers, body, ctx["insecure"])
+    if terr:
+        raise OfflineError(terr)
+    payload = parse_json_body(text) if text else {}
+    return status, payload
+
+
+def read_password_file(path):
+    """Return (password_or_None, error_or_None).
+
+    None password means the file is missing. Empty string is an empty file.
+    """
+    if not path:
+        return None, None
+    if not os.path.isfile(path):
+        return None, None
+    try:
+        st = os.stat(path)
+    except OSError as exc:
+        return None, "cannot read password file at %s (%s)" % (path, exc)
+    if st.st_mode & (stat.S_IRWXG | stat.S_IRWXO):
+        return None, "password file is group/world-readable; chmod 600 %s" % path
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            raw = fh.read()
+    except OSError as exc:
+        return None, "cannot read password file at %s (%s)" % (path, exc)
+    return raw.rstrip(" \t\r\n"), None
+
+
+def load_sid(ctx):
+    path = ctx["session_file"]
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            sid = fh.read().strip()
+    except OSError:
+        return ""
+    return sid
+
+
+def drop_sid(ctx):
+    path = ctx["session_file"]
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+
+def save_sid(ctx, sid):
+    if not sid:
+        drop_sid(ctx)
+        return
+    directory = os.path.dirname(ctx["session_file"])
+    os.makedirs(directory, mode=0o700, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix="session.", dir=directory)
+    try:
+        os.write(fd, (sid + "\n").encode("utf-8"))
+        os.fchmod(fd, 0o600)
+        os.close(fd)
+        fd = -1
+        os.rename(tmp, ctx["session_file"])
+        tmp = None
+    finally:
+        if fd >= 0:
+            os.close(fd)
+        if tmp and os.path.exists(tmp):
+            os.remove(tmp)
+
+
+def replace_sid(ctx, new_sid):
+    """DELETE a SID we still hold before installing a different one."""
+    old = load_sid(ctx)
+    if old and old != new_sid:
+        try:
+            request(ctx, "DELETE", "/api/auth", sid=old)
+        except HelperError:
+            pass
+    save_sid(ctx, new_sid)
+
+
+def session_valid(payload):
+    session = payload.get("session") if isinstance(payload, dict) else None
+    return isinstance(session, dict) and session.get("valid") is True
+
+
+def session_totp(payload):
+    session = payload.get("session") if isinstance(payload, dict) else None
+    if isinstance(session, dict):
+        return bool(session.get("totp"))
+    return False
+
+
+def session_sid(payload):
+    session = payload.get("session") if isinstance(payload, dict) else None
+    if not isinstance(session, dict):
+        return ""
+    sid = session.get("sid")
+    if sid is None:
+        return ""
+    return str(sid)
+
+
+def authenticate(ctx, held_sid=""):
+    """Establish a session. GET /api/auth, then POST password if needed."""
+    status, payload = request(ctx, "GET", "/api/auth", sid=held_sid or None)
+    if status == 429:
+        raise AuthError(error_hint(payload) or "too many requests")
+    totp = session_totp(payload)
+    if status == 200 and session_valid(payload):
+        sid = session_sid(payload)
+        if sid:
+            if held_sid and held_sid != sid:
+                replace_sid(ctx, sid)
+            else:
+                save_sid(ctx, sid)
+        elif held_sid:
+            drop_sid(ctx)
+        return sid
+
+    if status not in (200, 401):
+        raise_http_error(status, payload, "auth check failed")
+
+    password, pw_err = read_password_file(ctx["password_file"])
+    if pw_err:
+        raise AuthError(pw_err)
+    if password is None:
+        raise AuthError("no password file at %s" % ctx["password_file"])
+
+    if held_sid:
+        try:
+            request(ctx, "DELETE", "/api/auth", sid=held_sid)
+        except HelperError:
+            pass
+        drop_sid(ctx)
+
+    status, payload = request(ctx, "POST", "/api/auth", body={"password": password})
+    if status == 429:
+        raise AuthError(error_hint(payload) or "too many requests")
+    totp = totp or session_totp(payload)
+    login_failed = (
+        status in (400, 401)
+        or not session_valid(payload)
+        or (status != 200)
+    )
+    if login_failed:
+        key = error_key(payload)
+        if totp and (status in (400, 401) or key == "totp_missing"):
+            raise AuthError(TWO_FA_MSG)
+        raise AuthError("password rejected")
+    sid = session_sid(payload)
+    if sid:
+        save_sid(ctx, sid)
+    return sid
+
+
+def ensure_session(ctx):
+    if ctx.get("authed"):
+        return
+    if not load_sid(ctx):
+        authenticate(ctx)
+    ctx["authed"] = True
+
+
+def api(ctx, method, path, body=None, retried=False):
+    if not retried:
+        ensure_session(ctx)
+    sid = load_sid(ctx)
+    status, payload = request(ctx, method, path, body=body, sid=sid or None)
+    if status == 429:
+        raise AuthError(error_hint(payload) or "too many requests")
+    if status == 401:
+        drop_sid(ctx)
+        ctx["authed"] = False
+        if retried:
+            raise AuthError("unauthorized")
+        authenticate(ctx)
+        ctx["authed"] = True
+        return api(ctx, method, path, body=body, retried=True)
+    if status == 204:
+        return {}
+    if status != 200:
+        raise_http_error(status, payload)
+    return payload
+
+
+def map_blocking(payload):
+    raw = payload.get("blocking") if isinstance(payload, dict) else None
+    timer = payload.get("timer") if isinstance(payload, dict) else None
+    if raw is True or raw == "enabled":
+        mode = "enabled"
+    elif raw is False or raw == "disabled":
+        mode = "disabled"
+    elif raw in ("failed", "unknown"):
+        raise FailedError("blocking %s" % raw)
+    else:
+        raise FailedError("unexpected blocking status")
+    remaining = None
+    if isinstance(timer, bool):
+        remaining = None
+    elif isinstance(timer, (int, float)) and timer > 0:
+        remaining = int(timer)
+    if mode == "enabled":
+        return "enabled", True, remaining if remaining else None
+    if remaining:
+        return "paused", False, remaining
+    return "disabled", False, None
+
+
+def map_queries(payload):
+    queries = payload.get("queries") if isinstance(payload, dict) else None
+    if not isinstance(queries, dict):
+        return None
+    def num(key):
+        value = queries.get(key)
+        if isinstance(value, bool) or value is None:
+            return 0
+        try:
+            n = float(value)
+        except (TypeError, ValueError):
+            return 0
+        return n
+
+    return {
+        "total": int(num("total")),
+        "blocked": int(num("blocked")),
+        "percent_blocked": float(num("percent_blocked")),
+        "unique_domains": int(num("unique_domains")),
+        "frequency": float(num("frequency")),
+    }
+
+
+def map_gravity(payload):
+    gravity = payload.get("gravity") if isinstance(payload, dict) else None
+    if not isinstance(gravity, dict):
+        return None
+    domains = gravity.get("domains_being_blocked")
+    last = gravity.get("last_update")
+    try:
+        domains_n = int(domains)
+    except (TypeError, ValueError):
+        domains_n = 0
+    try:
+        last_n = int(last)
+    except (TypeError, ValueError):
+        last_n = 0
+    return {
+        "domains_being_blocked": domains_n,
+        "last_update": last_n,
+    }
+
+
+def map_history(payload):
+    rows = payload.get("history") if isinstance(payload, dict) else None
+    if not isinstance(rows, list):
+        return None
+    out = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        t = row.get("t", row.get("timestamp"))
+        try:
+            t_n = int(t)
+            total = int(row.get("total") or 0)
+            blocked = int(row.get("blocked") or 0)
+        except (TypeError, ValueError):
+            continue
+        out.append({"t": t_n, "total": total, "blocked": blocked})
+    return out
+
+
+def map_recent_blocked(payload):
+    blocked = payload.get("blocked") if isinstance(payload, dict) else None
+    if isinstance(blocked, list):
+        return [str(item) for item in blocked if item]
+    if isinstance(blocked, str) and blocked:
+        return [blocked]
+    return []
+
+
+def collect_status(ctx, full):
+    summary = api(ctx, "GET", "/api/stats/summary")
+    blocking = api(ctx, "GET", "/api/dns/blocking")
+    state, is_blocking, timer = map_blocking(blocking)
+    history = None
+    recent = []
+    if full:
+        try:
+            history = map_history(api(ctx, "GET", "/api/history"))
+        except AuthError:
+            raise
+        except HelperError:
+            history = None
+        try:
+            recent = map_recent_blocked(api(ctx, "GET", "/api/stats/recent_blocked?count=3"))
+        except AuthError:
+            raise
+        except HelperError:
+            recent = []
+    return envelope(
+        state,
+        ok=True,
+        error=None,
+        blocking=is_blocking,
+        timer=timer,
+        queries=map_queries(summary),
+        gravity=map_gravity(summary),
+        history=history if full else None,
+        recent_blocked=recent if full else [],
+    )
+
+
+def collect_ping(ctx):
+    summary = api(ctx, "GET", "/api/stats/summary")
+    try:
+        blocking = api(ctx, "GET", "/api/dns/blocking")
+        state, is_blocking, timer = map_blocking(blocking)
+    except HelperError:
+        state, is_blocking, timer = "enabled", True, None
+    return envelope(
+        state,
+        ok=True,
+        error=None,
+        blocking=is_blocking,
+        timer=timer,
+        queries=map_queries(summary),
+        gravity=map_gravity(summary),
+        history=None,
+        recent_blocked=[],
+    )
+
+
+def do_pause(ctx, seconds):
+    api(ctx, "POST", "/api/dns/blocking", body={"blocking": False, "timer": int(seconds)})
+    return collect_status(ctx, full=False)
+
+
+def do_resume(ctx):
+    api(ctx, "POST", "/api/dns/blocking", body={"blocking": True, "timer": None})
+    return collect_status(ctx, full=False)
+
+
+def build_ctx(env):
+    origin = normalize_origin(env.get("OMAPIHOLE_URL", ""))
+    password_file = expand_path(env.get("OMAPIHOLE_PASSWORD_FILE") or DEFAULT_PASSWORD_FILE)
+    return {
+        "origin": origin,
+        "password_file": password_file,
+        "insecure": parse_allow_insecure(env.get("OMAPIHOLE_ALLOW_INSECURE")),
+        "session_file": session_path(env),
+        "env": env,
+    }
+
+
+def with_lock(env, fn):
+    directory = state_dir(env)
+    try:
+        os.makedirs(directory, mode=0o700, exist_ok=True)
+        fd = os.open(lock_path(env), os.O_CREAT | os.O_RDWR, 0o600)
+    except OSError as exc:
+        raise FailedError("cannot write session state (%s)" % exc)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        return fn()
+    finally:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        except OSError:
+            pass
+        os.close(fd)
+
+
+def dispatch(argv, env):
+    args = list(argv[1:])
+    command = args[0]
+    rest = args[1:]
+    ctx = build_ctx(env)
+
+    _, pw_err = read_password_file(ctx["password_file"])
+    if pw_err:
+        raise AuthError(pw_err)
+
+    if command == "status":
+        full = True
+        if rest == ["--bar"]:
+            full = False
+        elif rest:
+            raise SystemExit(usage("unknown status argument"))
+        return collect_status(ctx, full)
+    if command == "ping":
+        if rest:
+            raise SystemExit(usage("ping takes no arguments"))
+        return collect_ping(ctx)
+    if command == "pause":
+        if len(rest) != 1:
+            raise SystemExit(usage("pause requires seconds"))
+        try:
+            seconds = int(rest[0])
+        except ValueError:
+            raise SystemExit(usage("pause seconds must be an integer"))
+        if seconds <= 0:
+            raise SystemExit(usage("pause seconds must be > 0"))
+        return do_pause(ctx, seconds)
+    if command == "resume":
+        if rest:
+            raise SystemExit(usage("resume takes no arguments"))
+        return do_resume(ctx)
+    raise SystemExit(usage("unknown command"))
+
+
+def run(argv, env):
+    args = list(argv[1:])
+    if not args or args[0] in ("-h", "--help"):
+        raise SystemExit(usage())
+    if not normalize_origin(env.get("OMAPIHOLE_URL", "")):
+        print_json(envelope("unconfigured", error="empty url"))
+        return 0
+    try:
+        result = with_lock(env, lambda: dispatch(argv, env))
+    except AuthError as exc:
+        result = envelope("auth", error=str(exc))
+    except OfflineError as exc:
+        result = envelope("offline", error=str(exc))
+    except FailedError as exc:
+        result = envelope("failed", error=str(exc))
+    print_json(result)
+    return 0
+
+
+def main():
+    return run(sys.argv, os.environ)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
