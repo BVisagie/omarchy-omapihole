@@ -77,7 +77,10 @@ omarchy bar set bvisagie.omapihole refreshSeconds 20 --json
 
 ```sh
 omarchy plugin update bvisagie.omapihole
+omarchy restart shell
 ```
+
+`plugin update` hot-reloads the widget in place, which can leave it showing "Not configured" even though `shell.json` still has your settings. Follow it with `omarchy restart shell` to be sure the widget picks its saved settings back up.
 
 ## Uninstall
 
