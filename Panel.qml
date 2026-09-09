@@ -93,9 +93,24 @@ Panel {
         return false
     }
 
+    // The host Bar exposes a writable property, but the PluginBarApi facade
+    // third-party widgets actually get exposes it read-only alongside a setter.
+    // Prefer the setter, and never let a read-only bar throw: this runs inside
+    // open()/close(), and a throw here aborts them before the panel controller
+    // is touched, leaving the panel stuck open and holding keyboard focus.
     function setCenterHoverRevealSuppressed(value) {
-        if (root.bar && "centerHoverRevealSuppressed" in root.bar)
-            root.bar.centerHoverRevealSuppressed = value
+        if (!root.bar) return
+        if (typeof root.bar.setCenterHoverRevealSuppressed === "function") {
+            root.bar.setCenterHoverRevealSuppressed(value)
+            return
+        }
+        if ("centerHoverRevealSuppressed" in root.bar) {
+            try {
+                root.bar.centerHoverRevealSuppressed = value
+            } catch (e) {
+                // Read-only on this bar. The suppression is cosmetic, so skip it.
+            }
+        }
     }
 
     function loadDrafts() {
