@@ -26,8 +26,10 @@ BarWidget {
 
     property var snapshot: Model.unconfiguredSnapshot()
     property double nowSec: Date.now() / 1000
-    property var pendingAction: null
+    property var pendingActions: []
     property string inFlight: ""
+    // API origin the running request was started against; see applyHelperResult.
+    property string inFlightOrigin: ""
     property bool zeroPollSent: false
     property var lastPing: null
     property bool pinging: false
@@ -150,7 +152,8 @@ BarWidget {
     }
 
     function adoptSnapshot(next) {
-        if (!next || !configured) return
+        // A peer may still be finishing a request to the previous host.
+        if (!next || !configured || next.origin !== apiOrigin) return
         snapshot = next
         zeroPollSent = false
     }
@@ -219,7 +222,7 @@ BarWidget {
             return
         }
         if (helperProc.running) {
-            pendingAction = Model.queueAction(pendingAction, action)
+            pendingActions = Model.queueAction(pendingActions, action)
             return
         }
         startAction(action)
@@ -234,9 +237,11 @@ BarWidget {
         else if (action.type === "allow") argv = [helperPath, "allow", String(action.domain)]
         else if (action.type === "ping") argv = [helperPath, "ping"]
         else return
+        var env = helperEnv(action)
         inFlight = action.type
+        inFlightOrigin = env.OMAPIHOLE_URL
         helperProc.command = argv
-        helperProc.environment = helperEnv(action)
+        helperProc.environment = env
         helperProc.running = true
     }
 
@@ -251,36 +256,32 @@ BarWidget {
             pinging = false
             return
         }
-        if (!incoming) {
-            snapshot = Model.mergeSnapshot(snapshot, {
-                ok: false,
-                state: "failed",
-                error: "malformed helper output",
-                fetched_at: Date.now() / 1000
-            })
-            shareSnapshot()
-            return
+        var result = incoming || {
+            ok: false,
+            state: "failed",
+            error: "malformed helper output",
+            fetched_at: Date.now() / 1000
         }
-        if (incoming.ok === true) {
-            snapshot = Model.applySuccessfulSnapshot(incoming, snapshot)
-            zeroPollSent = false
-        } else {
-            snapshot = Model.mergeSnapshot(snapshot, incoming)
-        }
-        shareSnapshot()
         if (inFlight === "allow") {
-            if (incoming.action) flash(incoming.action.message, incoming.action.ok === true)
-            else if (incoming.error) flash(incoming.error, false)
+            if (result.action) flash(result.action.message, result.action.ok === true)
+            else if (result.error) flash(result.error, false)
         }
+        // Dropped when the URL changed while this request was running.
+        var next = Model.applyHelperResult(snapshot, result, inFlightOrigin, apiOrigin)
+        if (next === snapshot) return
+        snapshot = next
+        if (result.ok === true) zeroPollSent = false
+        shareSnapshot()
         if ((inFlight === "pause" || inFlight === "resume") && opened)
-            pendingAction = Model.queueAction(pendingAction, { type: "full" })
+            pendingActions = Model.queueAction(pendingActions, { type: "full" })
     }
 
     function drainQueue() {
-        var next = pendingAction
-        pendingAction = null
+        var queue = pendingActions
+        pendingActions = queue.length > 1 ? queue.slice(1) : []
         inFlight = ""
-        if (next) startAction(next)
+        inFlightOrigin = ""
+        if (queue.length > 0) startAction(queue[0])
     }
 
     onBarChanged: injectPanel()

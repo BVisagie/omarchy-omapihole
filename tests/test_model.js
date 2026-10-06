@@ -291,16 +291,71 @@ test("queueAction never lets a read displace a waiting write", () => {
   const full = { type: "full" };
   const pause = { type: "pause", seconds: 30 };
   const resume = { type: "resume" };
-  assert.equal(Model.queueAction(null, bar), bar);
-  assert.equal(Model.queueAction(bar, full), full);
-  assert.equal(Model.queueAction(full, bar), full);
-  assert.equal(Model.queueAction(full, pause), pause);
-  assert.equal(Model.queueAction(pause, full), pause);
-  assert.equal(Model.queueAction(pause, bar), pause);
-  assert.equal(Model.queueAction(pause, resume), resume);
-  assert.equal(Model.queueAction(pause, null), pause);
+  assert.deepEqual(Model.queueAction([], bar), [bar]);
+  assert.deepEqual(Model.queueAction(null, bar), [bar]);
+  assert.deepEqual(Model.queueAction([bar], full), [full]);
+  assert.deepEqual(Model.queueAction([full], bar), [full]);
+  assert.deepEqual(Model.queueAction([full], pause), [pause, full]);
+  assert.deepEqual(Model.queueAction([pause], full), [pause, full]);
+  assert.deepEqual(Model.queueAction([pause, full], bar), [pause, full]);
+  // Pause/resume are latest-intent.
+  assert.deepEqual(Model.queueAction([pause], resume), [resume]);
+  assert.deepEqual(Model.queueAction([pause, full], null), [pause, full]);
   assert.equal(Model.isWriteAction({ type: "allow", domain: "a.b" }), true);
   assert.equal(Model.isWriteAction({ type: "ping" }), true);
+});
+
+test("confirmed allows are independent and never coalesced away", () => {
+  const a = { type: "allow", domain: "a.example" };
+  const b = { type: "allow", domain: "b.example" };
+  const pause = { type: "pause", seconds: 30 };
+  // PR #7 review: allow A then allow B while busy must send both.
+  let q = Model.queueAction([], a);
+  q = Model.queueAction(q, b);
+  assert.deepEqual(q, [a, b]);
+  // A later pause or read does not displace them either.
+  q = Model.queueAction(q, { type: "full" });
+  q = Model.queueAction(q, pause);
+  assert.deepEqual(q, [a, b, pause, { type: "full" }]);
+  // Confirming the same domain twice queues it once.
+  assert.deepEqual(Model.queueAction([a], { type: "allow", domain: "a.example" }), [{ type: "allow", domain: "a.example" }]);
+  // A newer ping replaces a waiting one but leaves allows alone.
+  assert.deepEqual(Model.queueAction([{ type: "ping" }, a], { type: "ping", env: 1 }), [a, { type: "ping", env: 1 }]);
+});
+
+test("responses from a previous API origin are discarded", () => {
+  const oldHost = "http://192.168.1.2";
+  const newHost = "http://192.168.1.3";
+  let snap = Model.applyHelperResult(Model.unconfiguredSnapshot(), {
+    ok: true, state: "enabled", queries: { total: 1 }, history: historyPoints(6),
+    recent_blocked: ["old.example"], fetched_at: 100
+  }, oldHost, oldHost);
+  assert.equal(snap.origin, oldHost);
+  assert.deepEqual(snap.recent_blocked, ["old.example"]);
+
+  // PR #7 review sequence: URL changes, the old host's full response lands
+  // late, then the new host's bar poll arrives.
+  snap = Model.withoutExtras(snap);
+  const late = { ok: true, state: "enabled", history: historyPoints(6), recent_blocked: ["old.example"], fetched_at: 110 };
+  assert.equal(Model.applyHelperResult(snap, late, oldHost, newHost), snap);
+  snap = Model.applyHelperResult(snap, {
+    ok: true, state: "enabled", queries: { total: 2 }, history: null, recent_blocked: [], fetched_at: 120
+  }, newHost, newHost);
+  assert.equal(snap.origin, newHost);
+  assert.deepEqual(snap.recent_blocked, []);
+  assert.equal(snap.history, null);
+
+  // Even without the discard, extras never carry across origins.
+  const carried = Model.applySuccessfulSnapshot(
+    { ok: true, state: "enabled", history: null, recent_blocked: [], origin: newHost },
+    { state: "enabled", history: historyPoints(3), recent_blocked: ["old.example"], origin: oldHost });
+  assert.deepEqual(carried.recent_blocked, []);
+
+  // Failures are tagged too, and an old-origin failure is ignored.
+  assert.equal(Model.applyHelperResult(snap, { ok: false, state: "offline", error: "x" }, oldHost, newHost), snap);
+  const failed = Model.applyHelperResult(snap, { ok: false, state: "offline", error: "x", fetched_at: 130 }, newHost, newHost);
+  assert.equal(failed.state, "offline");
+  assert.equal(failed.origin, newHost);
 });
 
 test("away from home hides the bar label and explains the tooltip", () => {
