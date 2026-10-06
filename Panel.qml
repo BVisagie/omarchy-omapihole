@@ -61,7 +61,10 @@ Panel {
     property bool draftAllowInsecure: false
     property bool awaitingTest: false
     property bool settingsOpen: false
-    property int chipIndex: 0
+    // -1 means no chip is selected. The panel opens that way, so a stray
+    // Enter or Space (e.g. typing when a hotkey opens it) cannot pause
+    // blocking; arrow keys or hover select a chip first.
+    property int chipIndex: -1
     property string testMessage: ""
     property bool testOk: false
     // A blocked domain whose Allow button was pressed once; a second press
@@ -81,7 +84,7 @@ Panel {
         return []
     }
 
-    onChipsChanged: if (chipIndex >= chips.length) chipIndex = 0
+    onChipsChanged: chipIndex = -1
 
     // BarWidget.onOpenedChanged starts the full refresh and this panel's
     // onOpenedChanged loads the drafts, so open paths only show the panel.
@@ -220,13 +223,16 @@ Panel {
             testConnection()
             return
         }
-        if (chips.length === 0) return
-        var i = Math.max(0, Math.min(chipIndex, chips.length - 1))
-        runChip(chips[i].id)
+        if (chipIndex < 0 || chipIndex >= chips.length) return
+        runChip(chips[chipIndex].id)
     }
 
     function moveChip(dx) {
         if (chips.length === 0) return
+        if (chipIndex < 0) {
+            chipIndex = dx > 0 ? 0 : chips.length - 1
+            return
+        }
         var next = chipIndex + dx
         if (next < 0) next = chips.length - 1
         if (next >= chips.length) next = 0
@@ -274,6 +280,7 @@ Panel {
 
     onOpenedChanged: if (opened) {
         settingsOpen = false
+        chipIndex = -1
         allowArmed = ""
         loadDrafts()
         Qt.callLater(function () { if (keyCatcher) keyCatcher.forceActiveFocus() })
@@ -736,7 +743,7 @@ Panel {
                                 fontFamily: root.fontFamily
                                 tooltipText: "Resume blocking (e)"
                                 onClicked: root.runChip("resume")
-                                onHovered: function (hot) { if (hot) root.chipIndex = 0 }
+                                onHovered: function (hot) { root.chipIndex = hot ? 0 : (root.chipIndex === 0 ? -1 : root.chipIndex) }
                             }
                         }
 
@@ -759,7 +766,7 @@ Panel {
                                         ? "Enable blocking (e)"
                                         : "Pause blocking for " + modelData.label + " (" + (index + 1) + ")"
                                     onClicked: root.runChip(modelData.id)
-                                    onHovered: function (hot) { if (hot) root.chipIndex = index }
+                                    onHovered: function (hot) { root.chipIndex = hot ? index : (root.chipIndex === index ? -1 : root.chipIndex) }
                                 }
                             }
                         }
