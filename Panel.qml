@@ -2,6 +2,7 @@ import QtQuick
 import qs.Commons
 import qs.Ui
 import "Model.js" as Model
+import "PopupColors.js" as PopupColors
 
 Panel {
     id: root
@@ -33,11 +34,13 @@ Panel {
     readonly property var pingResult: hostWidget ? hostWidget.lastPing : null
     readonly property bool pinging: hostWidget ? hostWidget.pinging === true : false
     // The transparent bar adapts its text to the wallpaper; the popup has
-    // its own background and text palette. Derive secondary text from that
-    // palette too, since terminal muted colors can disappear on the popup.
-    readonly property color popupFg: Color.popups.text
-    readonly property color mutedFg: Util.alpha(root.popupFg, 0.7)
-    readonly property color urgentFg: Color.urgent
+    // its own palette. Older shells use the foundational palette instead.
+    readonly property color popupFg: Color.popups ? Color.popups.text : Color.foreground
+    readonly property color popupBg: Color.popups ? Color.popups.background : Color.background
+    // Keep theme-muted text when readable; otherwise use popup text without
+    // changing its alpha. Contrast is measured against the popup's base RGB.
+    readonly property color mutedFg: PopupColors.readableMuted(Color.muted, root.popupFg, root.popupBg)
+    readonly property color urgentFg: root.bar ? root.bar.urgent : Color.urgent
     readonly property bool holeOpen: shownState === "paused" || shownState === "disabled"
 
     property string draftUrl: ""
