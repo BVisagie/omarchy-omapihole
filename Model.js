@@ -13,7 +13,8 @@ var REFRESH_MIN = 10
 var REFRESH_MAX = 120
 var DEFAULT_REFRESH = 20
 var BAR_METRICS = ["percent", "rate", "queries"]
-var PAUSE_SECONDS = [30, 300, 900]
+var PAUSE_SECONDS = [30, 300, 900, 3600]
+var ALLOW_CONFIRM_MS = 4000
 
 function trim(value) {
     return String(value === null || value === undefined ? "" : value).replace(/^\s+|\s+$/g, "")
@@ -75,6 +76,19 @@ function isPrivateIPv4ApiOrigin(url) {
     return values[0] === 10
         || (values[0] === 172 && values[1] >= 16 && values[1] <= 31)
         || (values[0] === 192 && values[1] === 168)
+}
+
+// Same shape the helper accepts for `allow`: plain DNS labels, no scheme,
+// path, wildcard, or regex. The helper re-checks; this keeps junk out of argv.
+function normalizeDomain(value) {
+    var s = trim(value).toLowerCase().replace(/\.+$/, "")
+    if (s.length < 1 || s.length > 253) return ""
+    var labels = s.split(".")
+    var i
+    for (i = 0; i < labels.length; i++) {
+        if (!/^[a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9_])?$/.test(labels[i])) return ""
+    }
+    return s
 }
 
 function passwordFile(value) {
@@ -164,6 +178,24 @@ function pad2(n) {
     return n < 10 ? "0" + n : String(n)
 }
 
+// "just now", "42s ago", "5m ago", "3h ago", "2d ago" for the freshness line.
+function formatAge(seconds) {
+    var s = Math.floor(Number(seconds))
+    if (!isFinite(s)) return ""
+    if (s < 5) return "just now"
+    if (s < 60) return s + "s ago"
+    if (s < 3600) return Math.floor(s / 60) + "m ago"
+    if (s < 86400) return Math.floor(s / 3600) + "h ago"
+    return Math.floor(s / 86400) + "d ago"
+}
+
+// Helper errors are terse lowercase fragments; the panel shows them as text.
+function sentence(text) {
+    var s = trim(text)
+    if (!s) return ""
+    return s.charAt(0).toUpperCase() + s.substring(1)
+}
+
 function formatCountdown(seconds) {
     var s = Math.floor(Number(seconds))
     if (!isFinite(s) || s < 0) s = 0
@@ -201,10 +233,16 @@ function displayState(snapshot, nowSec) {
     return "paused"
 }
 
+function isAway(snapshot, origin) {
+    return canonicalState(snapshot) === "offline" && isPrivateIPv4ApiOrigin(origin)
+}
+
 function barLabel(snapshot, settings, nowSec) {
     var s = displayState(snapshot, nowSec)
     if (s === "unconfigured") return ""
     if (s === "auth") return "auth"
+    // Away from home is expected, not an alarm: the muted mark says enough.
+    if (isAway(snapshot, coerceSettings(settings).url)) return ""
     if (s === "offline" || s === "failed") return "—"
     if (s === "disabled") return "off"
     if (s === "paused") {
@@ -240,17 +278,18 @@ function headerStatus(snapshot, nowSec, origin) {
 
 function tooltipText(snapshot, settings, nowSec) {
     var s = canonicalState(snapshot)
-    if (s === "unconfigured") return "OmaPihole: not configured"
-    if (snapshot && snapshot.error && (s === "offline" || s === "auth" || s === "failed"))
-        return String(snapshot.error)
     var cfg = coerceSettings(settings)
+    if (s === "unconfigured") return "OmaPihole: not configured. Click to set up."
+    if (isAway(snapshot, cfg.url)) return "Home Pi-hole is not reachable from this network"
+    if (snapshot && snapshot.error && (s === "offline" || s === "auth" || s === "failed"))
+        return sentence(snapshot.error)
     var host = hostLabel(cfg.url)
     var queries = snapshot && snapshot.queries ? snapshot.queries : null
     var lines = []
     if (host) lines.push(host)
     if (queries) {
-        lines.push(compactNumber(queries.total) + " queries today")
-        lines.push(compactNumber(queries.blocked) + " blocked today")
+        lines.push(compactNumber(queries.total) + " queries (24h)")
+        lines.push(compactNumber(queries.blocked) + " blocked (24h)")
     }
     var recent = snapshot && snapshot.recent_blocked ? snapshot.recent_blocked : []
     if (recent && recent.length > 0) lines.push("last " + String(recent[0]))
@@ -336,19 +375,112 @@ function mergeSnapshot(previous, incoming) {
     merged.state = incoming.state
     merged.error = incoming.error
     merged.fetched_at = incoming.fetched_at
+    if (incoming.origin !== undefined) merged.origin = incoming.origin
+    // Keep when the numbers were actually fetched, so the panel can say how
+    // old the last-known data is.
+    merged.data_at = previous.data_at !== undefined ? previous.data_at : previous.fetched_at
     merged.stale = true
     if (incoming.blocking !== undefined) merged.blocking = incoming.blocking
     if (incoming.timer !== undefined) merged.timer = incoming.timer
     return merged
 }
 
-function applySuccessfulSnapshot(incoming) {
+// A bar poll (`status --bar`) does not fetch history or recent blocks. Carry
+// the previous ones forward so the open panel does not lose its sparkline
+// and list between full refreshes.
+function applySuccessfulSnapshot(incoming, previous) {
     if (!incoming) return unconfiguredSnapshot()
     var copy = {}
     var key
     for (key in incoming) copy[key] = incoming[key]
     copy.stale = false
+    copy.data_at = incoming.fetched_at
+    var prior = previous && canonicalState(previous) !== "unconfigured" ? previous : null
+    // Never carry another host's history or blocked domains forward.
+    if (prior && prior.origin !== copy.origin) prior = null
+    if (prior && (copy.history === null || copy.history === undefined)) {
+        copy.history = prior.history === undefined ? null : prior.history
+        if (!copy.recent_blocked || copy.recent_blocked.length === 0)
+            copy.recent_blocked = prior.recent_blocked || []
+    }
     return copy
+}
+
+// Same snapshot without the history/recent extras, for when the target
+// Pi-hole changes and the old ones belong to a different host.
+function withoutExtras(snapshot) {
+    if (!snapshot) return unconfiguredSnapshot()
+    var copy = {}
+    var key
+    for (key in snapshot) copy[key] = snapshot[key]
+    copy.history = null
+    copy.recent_blocked = []
+    return copy
+}
+
+function dataAge(snapshot, nowSec) {
+    if (!snapshot) return null
+    var at = Number(snapshot.data_at !== undefined ? snapshot.data_at : snapshot.fetched_at)
+    if (!isFinite(at) || at <= 0) return null
+    return Math.max(0, Number(nowSec) - at)
+}
+
+// Fold one helper result into the snapshot. `requestOrigin` is the API
+// origin the request was started against; a response from an origin that is
+// no longer configured is discarded, so a slow request to the old host
+// cannot repaint the widget (or its blocked list) under the new one.
+function applyHelperResult(previous, incoming, requestOrigin, currentOrigin) {
+    if (!incoming || requestOrigin !== currentOrigin) return previous
+    var tagged = {}
+    var key
+    for (key in incoming) tagged[key] = incoming[key]
+    tagged.origin = requestOrigin
+    if (tagged.ok === true) return applySuccessfulSnapshot(tagged, previous)
+    return mergeSnapshot(previous, tagged)
+}
+
+var READ_ACTIONS = { bar: 1, full: 2 }
+
+function isWriteAction(action) {
+    return !!action && !READ_ACTIONS[action.type]
+}
+
+// Actions of the same kind where only the latest one matters.
+function supersedes(a, b) {
+    var blocking = { pause: 1, resume: 1 }
+    if (blocking[a.type] && blocking[b.type]) return true
+    if (a.type === "ping" && b.type === "ping") return true
+    return a.type === "allow" && b.type === "allow" && a.domain === b.domain
+}
+
+// The helper runs one action at a time; the rest wait here, in order.
+// Pause/resume and ping are latest-intent, so a new one replaces a waiting
+// one of its kind. Allows are independent and all run (a repeat of the same
+// domain is dropped). At most one read waits, after the writes, and the
+// fuller read wins. Returns a new array.
+function queueAction(queue, incoming) {
+    var writes = []
+    var read = null
+    var list = Array.isArray(queue) ? queue : []
+    var i
+    for (i = 0; i < list.length; i++) {
+        if (!list[i]) continue
+        if (isWriteAction(list[i])) writes.push(list[i])
+        else read = list[i]
+    }
+    if (incoming) {
+        if (isWriteAction(incoming)) {
+            var kept = []
+            for (i = 0; i < writes.length; i++) {
+                if (!supersedes(incoming, writes[i])) kept.push(writes[i])
+            }
+            kept.push(incoming)
+            writes = kept
+        } else if (!read || READ_ACTIONS[incoming.type] >= READ_ACTIONS[read.type]) {
+            read = incoming
+        }
+    }
+    return read ? writes.concat([read]) : writes
 }
 
 function isStale(snapshot) {
@@ -366,6 +498,7 @@ function pauseSecondsForKey(text) {
     if (text === "1") return 30
     if (text === "2") return 300
     if (text === "3") return 900
+    if (text === "4") return 3600
     return 0
 }
 
@@ -375,6 +508,16 @@ if (typeof module !== "undefined") {
         REFRESH_MIN: REFRESH_MIN,
         REFRESH_MAX: REFRESH_MAX,
         PAUSE_SECONDS: PAUSE_SECONDS,
+        ALLOW_CONFIRM_MS: ALLOW_CONFIRM_MS,
+        normalizeDomain: normalizeDomain,
+        formatAge: formatAge,
+        sentence: sentence,
+        isAway: isAway,
+        withoutExtras: withoutExtras,
+        dataAge: dataAge,
+        isWriteAction: isWriteAction,
+        queueAction: queueAction,
+        applyHelperResult: applyHelperResult,
         trim: trim,
         clamp: clamp,
         parseBool: parseBool,

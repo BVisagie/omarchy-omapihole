@@ -26,11 +26,15 @@ BarWidget {
 
     property var snapshot: Model.unconfiguredSnapshot()
     property double nowSec: Date.now() / 1000
-    property var pendingAction: null
+    property var pendingActions: []
     property string inFlight: ""
+    // API origin the running request was started against; see applyHelperResult.
+    property string inFlightOrigin: ""
     property bool zeroPollSent: false
     property var lastPing: null
     property bool pinging: false
+    // Short-lived feedback for one-shot actions (copy, allow) shown in the panel.
+    property var notice: null
 
     readonly property string shownState: Model.displayState(snapshot, nowSec)
     readonly property string pillLabel: Model.barLabel(snapshot, root.settings, nowSec)
@@ -102,6 +106,58 @@ BarWidget {
         enqueue({ type: "resume" })
     }
 
+    function allow(domain) {
+        var clean = Model.normalizeDomain(domain)
+        if (!configured || !clean) return
+        enqueue({ type: "allow", domain: clean })
+    }
+
+    function copyText(text) {
+        var s = Model.trim(text)
+        if (!s) return
+        Util.execArgv(["wl-copy", "--", s])
+        flash("copied " + s, true)
+    }
+
+    function flash(text, ok) {
+        notice = { text: Model.sentence(text), ok: ok !== false }
+        noticeTimer.restart()
+    }
+
+    // A bar surface exists per monitor, so this widget can run several times.
+    // Only the first instance polls; every result is handed to the others so
+    // the bars agree and the Pi-hole is not polled once per monitor.
+    function peers() {
+        if (!root.bar || typeof root.bar.moduleWidgets !== "function") return []
+        var items = root.bar.moduleWidgets(root.moduleName) || []
+        var out = []
+        for (var i = 0; i < items.length; i++) {
+            if (items[i] && items[i] !== root) out.push(items[i])
+        }
+        return out
+    }
+
+    function isPrimary() {
+        if (!root.bar || typeof root.bar.moduleWidgets !== "function") return true
+        var items = root.bar.moduleWidgets(root.moduleName) || []
+        if (items.length === 0 || items.indexOf(root) < 0) return true
+        return items[0] === root
+    }
+
+    function shareSnapshot() {
+        var others = peers()
+        for (var i = 0; i < others.length; i++) {
+            if (typeof others[i].adoptSnapshot === "function") others[i].adoptSnapshot(root.snapshot)
+        }
+    }
+
+    function adoptSnapshot(next) {
+        // A peer may still be finishing a request to the previous host.
+        if (!next || !configured || next.origin !== apiOrigin) return
+        snapshot = next
+        zeroPollSent = false
+    }
+
     function pingWith(fields) {
         pinging = true
         lastPing = null
@@ -166,8 +222,7 @@ BarWidget {
             return
         }
         if (helperProc.running) {
-            if (action.type === "bar") return
-            pendingAction = action
+            pendingActions = Model.queueAction(pendingActions, action)
             return
         }
         startAction(action)
@@ -179,44 +234,54 @@ BarWidget {
         else if (action.type === "full") argv = [helperPath, "status"]
         else if (action.type === "pause") argv = [helperPath, "pause", String(action.seconds)]
         else if (action.type === "resume") argv = [helperPath, "resume"]
+        else if (action.type === "allow") argv = [helperPath, "allow", String(action.domain)]
         else if (action.type === "ping") argv = [helperPath, "ping"]
         else return
+        var env = helperEnv(action)
         inFlight = action.type
+        inFlightOrigin = env.OMAPIHOLE_URL
         helperProc.command = argv
-        helperProc.environment = helperEnv(action)
+        helperProc.environment = env
         helperProc.running = true
     }
 
     function applyHelperOutput(raw) {
         var incoming = Model.parseHelperJson(raw)
-        if (!incoming) {
-            snapshot = Model.mergeSnapshot(snapshot, {
-                ok: false,
-                state: "failed",
-                error: "malformed helper output",
-                fetched_at: Date.now() / 1000
-            })
+        // A ping tests draft settings, possibly for another host. It reports
+        // to the setup form only and must not repaint the live widget.
+        if (inFlight === "ping") {
+            lastPing = incoming
+                ? { ok: incoming.ok === true, error: incoming.error, state: incoming.state }
+                : { ok: false, error: "malformed helper output", state: "failed" }
+            pinging = false
             return
         }
-        if (incoming.ok === true) {
-            snapshot = Model.applySuccessfulSnapshot(incoming)
-            zeroPollSent = false
-        } else {
-            snapshot = Model.mergeSnapshot(snapshot, incoming)
+        var result = incoming || {
+            ok: false,
+            state: "failed",
+            error: "malformed helper output",
+            fetched_at: Date.now() / 1000
         }
-        if (inFlight === "ping") {
-            lastPing = { ok: incoming.ok === true, error: incoming.error, state: incoming.state }
-            pinging = false
+        if (inFlight === "allow") {
+            if (result.action) flash(result.action.message, result.action.ok === true)
+            else if (result.error) flash(result.error, false)
         }
+        // Dropped when the URL changed while this request was running.
+        var next = Model.applyHelperResult(snapshot, result, inFlightOrigin, apiOrigin)
+        if (next === snapshot) return
+        snapshot = next
+        if (result.ok === true) zeroPollSent = false
+        shareSnapshot()
         if ((inFlight === "pause" || inFlight === "resume") && opened)
-            pendingAction = { type: "full" }
+            pendingActions = Model.queueAction(pendingActions, { type: "full" })
     }
 
     function drainQueue() {
-        var next = pendingAction
-        pendingAction = null
+        var queue = pendingActions
+        pendingActions = queue.length > 1 ? queue.slice(1) : []
         inFlight = ""
-        if (next) startAction(next)
+        inFlightOrigin = ""
+        if (queue.length > 0) startAction(queue[0])
     }
 
     onBarChanged: injectPanel()
@@ -231,10 +296,17 @@ BarWidget {
             if (root.bar && button) root.bar.hideTooltip(button)
         }
     }
+    // First save from the setup form: fetch everything at once rather than
+    // leaving the open panel without a sparkline until the 60s full timer.
+    onConfiguredChanged: if (configured && opened) enqueue({ type: "full" })
     onApiOriginChanged: {
         zeroPollSent = false
         if (!configured) snapshot = Model.unconfiguredSnapshot()
-        else settingsDebounce.restart()
+        else {
+            // History and recent blocks belong to the previous host.
+            snapshot = Model.withoutExtras(snapshot)
+            settingsDebounce.restart()
+        }
     }
 
     implicitWidth: button.implicitWidth
@@ -260,6 +332,11 @@ BarWidget {
         function show(): void { root.open() }
         function hide(): void { root.close() }
         function toggle(): void { root.togglePanel() }
+        // For keybindings: omarchy-shell bvisagie.omapihole pause 300
+        function pause(seconds: int): void {
+            if (seconds > 0 && seconds <= 86400) root.pause(seconds)
+        }
+        function resume(): void { root.resume() }
     }
 
     Process {
@@ -280,9 +357,15 @@ BarWidget {
         id: settingsDebounce
         interval: 400
         onTriggered: {
-            if (root.configured) root.enqueue({ type: "bar" })
-            else root.snapshot = Model.unconfiguredSnapshot()
+            if (!root.configured) root.snapshot = Model.unconfiguredSnapshot()
+            else if (root.isPrimary()) root.enqueue({ type: "bar" })
         }
+    }
+
+    Timer {
+        id: noticeTimer
+        interval: 3500
+        onTriggered: root.notice = null
     }
 
     Timer {
@@ -291,7 +374,7 @@ BarWidget {
         running: root.configured
         repeat: true
         triggeredOnStart: true
-        onTriggered: root.enqueue({ type: "bar" })
+        onTriggered: if (root.isPrimary()) root.enqueue({ type: "bar" })
     }
 
     Timer {
@@ -311,7 +394,7 @@ BarWidget {
             root.nowSec = Date.now() / 1000
             if (Model.shouldPollZero(root.snapshot, root.nowSec, root.zeroPollSent)) {
                 root.zeroPollSent = true
-                root.enqueue({ type: "bar" })
+                if (root.isPrimary()) root.enqueue({ type: "bar" })
             }
         }
     }
