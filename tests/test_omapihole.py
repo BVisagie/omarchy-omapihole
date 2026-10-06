@@ -297,8 +297,11 @@ class HelperTests(unittest.TestCase):
             ]
         )
         result = self.run_cmd("status", "--bar", http=http)
-        self.assertEqual(result["state"], "auth")
-        self.assertEqual(result["error"], "increase webserver.api.max_sessions")
+        # Rate limits are retryable failures, not a reason to show setup.
+        self.assertEqual(result["state"], "failed")
+        self.assertEqual(
+            result["error"], "Pi-hole is rate-limiting: increase webserver.api.max_sessions"
+        )
         self.assertEqual(len(http.calls), 1)
         self.assertFalse(any(c["method"] == "POST" for c in http.calls))
 
@@ -311,8 +314,8 @@ class HelperTests(unittest.TestCase):
             ]
         )
         result = self.run_cmd("ping", http=http)
-        self.assertEqual(result["state"], "auth")
-        self.assertEqual(result["error"], "Rate-limiting login attempts")
+        self.assertEqual(result["state"], "failed")
+        self.assertEqual(result["error"], "Pi-hole is rate-limiting: Rate-limiting login attempts")
 
     def test_totp_web_password_uses_app_password_copy(self):
         self.write_password("web-password")
@@ -414,6 +417,88 @@ class HelperTests(unittest.TestCase):
         )
         self.run_cmd("status", "--bar", http=http)
         self.assertTrue(all(c["insecure"] for c in http.calls))
+
+    def allow_script(self, post_status, post_json):
+        return [
+            {"status": 200, "json": fixture("auth_valid_passwordless.json")},
+            {
+                "status": post_status,
+                "json": post_json,
+                "expect": {
+                    "method": "POST",
+                    "path": "/api/domains/allow/exact",
+                    "body": {
+                        "domain": "ads.example.com",
+                        "comment": "Allowed from OmaPihole",
+                        "enabled": True,
+                    },
+                },
+            },
+            {"status": 200, "json": fixture("summary.json")},
+            {"status": 200, "json": fixture("blocking_enabled.json")},
+            {"status": 200, "json": fixture("history.json")},
+            {"status": 200, "json": fixture("recent_blocked.json")},
+        ]
+
+    def test_allow_adds_exact_domain_and_returns_full_status(self):
+        created = {"processed": {"success": [{"item": "ads.example.com"}], "errors": []}}
+        http = FakeHttp(self.allow_script(201, created))
+        result = self.run_cmd("allow", "Ads.Example.com.", http=http)
+        self.assertEqual(result["state"], "enabled")
+        self.assertEqual(result["action"], {"ok": True, "message": "allowed ads.example.com"})
+        self.assertEqual(len(result["history"]), 6)
+
+    def test_allow_duplicate_is_reported_not_failed(self):
+        dup = {
+            "processed": {
+                "success": [],
+                "errors": [
+                    {
+                        "item": "ads.example.com",
+                        "error": "UNIQUE constraint failed: domainlist.domain, domainlist.type",
+                    }
+                ],
+            }
+        }
+        http = FakeHttp(self.allow_script(201, dup))
+        result = self.run_cmd("allow", "ads.example.com", http=http)
+        self.assertEqual(result["state"], "enabled")
+        self.assertEqual(result["action"]["message"], "ads.example.com is already allowed")
+
+    def test_allow_rejection_keeps_state(self):
+        http = FakeHttp(self.allow_script(400, {"error": {"message": "Invalid domain"}}))
+        result = self.run_cmd("allow", "ads.example.com", http=http)
+        self.assertEqual(result["state"], "enabled")
+        self.assertFalse(result["action"]["ok"])
+        self.assertEqual(result["action"]["message"], "Invalid domain")
+
+    def test_allow_refuses_non_domains(self):
+        for bad in ("", "ads example.com", "-ads.example.com", "a/b", "x" * 254):
+            buf = io.StringIO()
+            with mock.patch("sys.stderr", buf):
+                with self.assertRaises(SystemExit) as raised:
+                    self.mod.dispatch(["omapihole", "allow", bad], self.env)
+            self.assertEqual(raised.exception.code, 2, bad)
+
+    def test_sid_never_appears_on_curl_argv(self):
+        seen = {}
+
+        def fake_run(cmd, **kwargs):
+            seen["cmd"] = list(cmd)
+            header_arg = cmd[cmd.index("-H") + 1]
+            self.assertTrue(header_arg.startswith("@/dev/fd/"))
+            fd = int(header_arg.rsplit("/", 1)[1])
+            self.assertIn(fd, kwargs["pass_fds"])
+            seen["headers"] = os.read(fd, 4096).decode("utf-8")
+            return mock.Mock(returncode=0, stdout='{"ok":1}\n200', stderr="")
+
+        with mock.patch.object(self.mod.subprocess, "run", side_effect=fake_run):
+            status, text, err = self.mod.http_exchange(
+                "GET", "http://pi.hole/api/x", {"X-FTL-SID": "secret-sid"}, None, False
+            )
+        self.assertEqual((status, text, err), (200, '{"ok":1}', None))
+        self.assertNotIn("secret-sid", " ".join(seen["cmd"]))
+        self.assertIn("X-FTL-SID: secret-sid", seen["headers"])
 
     def test_usage_error_nonzero(self):
         buf = io.StringIO()

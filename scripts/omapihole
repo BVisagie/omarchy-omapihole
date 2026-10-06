@@ -12,19 +12,22 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import re
 import stat
 import subprocess
 import sys
 import tempfile
 import time
 
-USER_AGENT = "omapihole/0.1"
+USER_AGENT = "omapihole/0.2"
 CONNECT_TIMEOUT = "3"
 MAX_TIME = "8"
 MAX_SECRET_BYTES = 8192
 TWO_FA_MSG = "this Pi-hole has 2FA; use an app password, not the web password."
 DEFAULT_PASSWORD_FILE = "~/.config/omapihole/password"
-USAGE = "usage: omapihole status [--bar] | pause <seconds> | resume | ping"
+USAGE = "usage: omapihole status [--bar] | pause <seconds> | resume | allow <domain> | ping"
+ALLOW_COMMENT = "Allowed from OmaPihole"
+DOMAIN_RE = re.compile(r"^(?=.{1,253}$)([a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9_])?)(\.[a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9_])?)*$")
 
 
 class HelperError(Exception):
@@ -50,6 +53,14 @@ class FailedError(HelperError):
         super().__init__("failed", error)
 
 
+def rate_limited(payload):
+    # 429 means too many logins or no free API seats. Neither is fixed by
+    # editing credentials, so report it as a retryable failure rather than
+    # "auth", which would put the panel back into setup.
+    hint = error_hint(payload)
+    return FailedError("Pi-hole is rate-limiting: %s" % hint if hint else "Pi-hole is rate-limiting requests")
+
+
 # Tests replace this. Production talks to curl.
 def http_exchange(method, url, headers, body, insecure):
     """Return (status:int|None, text:str, error:str|None).
@@ -70,22 +81,36 @@ def http_exchange(method, url, headers, body, insecure):
     ]
     if insecure:
         cmd.append("-k")
-    for key, value in headers.items():
-        cmd.extend(["-H", "%s: %s" % (key, value)])
+    header_lines = ["%s: %s" % (key, value) for key, value in headers.items()]
     if body is not None:
-        cmd.extend(["-H", "Content-Type: application/json"])
+        header_lines.append("Content-Type: application/json")
         payload = body if isinstance(body, str) else json.dumps(body)
         cmd.extend(["--data-binary", "@-"])
     else:
         payload = None
-    cmd.append(url)
 
+    # Headers carry the SID. curl's argv is readable by every local user in
+    # /proc/<pid>/cmdline, so hand the headers over on a pipe instead. The
+    # blob is far below the pipe buffer, so writing it up front cannot block.
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, input=payload)
+        read_fd, write_fd = os.pipe()
+    except OSError as exc:
+        return None, "", str(exc)
+    try:
+        try:
+            os.write(write_fd, ("\n".join(header_lines) + "\n").encode("utf-8"))
+        finally:
+            os.close(write_fd)
+        cmd.extend(["-H", "@/dev/fd/%d" % read_fd, url])
+        proc = subprocess.run(
+            cmd, capture_output=True, text=True, input=payload, pass_fds=(read_fd,)
+        )
     except FileNotFoundError:
         return None, "", "curl not found"
     except OSError as exc:
         return None, "", str(exc)
+    finally:
+        os.close(read_fd)
 
     stdout = proc.stdout or ""
     stderr = (proc.stderr or "").strip()
@@ -229,7 +254,7 @@ def error_key(payload):
 
 def raise_http_error(status, payload, default="request failed"):
     if status == 429:
-        raise AuthError(error_hint(payload) or "too many requests")
+        raise rate_limited(payload)
     if status == 401:
         raise AuthError(error_hint(payload) or "unauthorized")
     if status is None:
@@ -370,7 +395,7 @@ def authenticate(ctx, held_sid=""):
     """Establish a session. GET /api/auth, then POST password if needed."""
     status, payload = request(ctx, "GET", "/api/auth", sid=held_sid or None)
     if status == 429:
-        raise AuthError(error_hint(payload) or "too many requests")
+        raise rate_limited(payload)
     totp = session_totp(payload)
     if status == 200 and session_valid(payload):
         sid = session_sid(payload)
@@ -401,7 +426,7 @@ def authenticate(ctx, held_sid=""):
 
     status, payload = request(ctx, "POST", "/api/auth", body={"password": password})
     if status == 429:
-        raise AuthError(error_hint(payload) or "too many requests")
+        raise rate_limited(payload)
     totp = totp or session_totp(payload)
     login_failed = (
         status in (400, 401)
@@ -433,7 +458,7 @@ def api(ctx, method, path, body=None, retried=False):
     sid = load_sid(ctx)
     status, payload = request(ctx, method, path, body=body, sid=sid or None)
     if status == 429:
-        raise AuthError(error_hint(payload) or "too many requests")
+        raise rate_limited(payload)
     if status == 401:
         drop_sid(ctx)
         ctx["authed"] = False
@@ -444,7 +469,7 @@ def api(ctx, method, path, body=None, retried=False):
         return api(ctx, method, path, body=body, retried=True)
     if status == 204:
         return {}
-    if status != 200:
+    if status is None or not 200 <= status < 300:
         raise_http_error(status, payload)
     return payload
 
@@ -592,6 +617,47 @@ def do_resume(ctx):
     return collect_status(ctx, full=False)
 
 
+def normalize_domain(value):
+    domain = str(value or "").strip().rstrip(".").lower()
+    if not DOMAIN_RE.match(domain):
+        return ""
+    return domain
+
+
+def add_allow(ctx, domain):
+    """Add an exact allow entry. Returns a short notice; raises FailedError."""
+    payload = api(
+        ctx,
+        "POST",
+        "/api/domains/allow/exact",
+        body={"domain": domain, "comment": ALLOW_COMMENT, "enabled": True},
+    )
+    processed = payload.get("processed") if isinstance(payload, dict) else None
+    if isinstance(processed, dict):
+        errors = processed.get("errors") or []
+        success = processed.get("success") or []
+        if errors and not success:
+            first = errors[0] if isinstance(errors[0], dict) else {}
+            message = str(first.get("error") or first.get("message") or "rejected")
+            if "unique" in message.lower():
+                return "%s is already allowed" % domain
+            raise FailedError("could not allow %s: %s" % (domain, message))
+    return "allowed %s" % domain
+
+
+def do_allow(ctx, domain):
+    # An allowlist rejection says nothing about the Pi-hole's health, so it
+    # rides along as `action` on a normal status rather than replacing the
+    # state with "failed". Auth and offline errors still propagate.
+    try:
+        action = {"ok": True, "message": add_allow(ctx, domain)}
+    except FailedError as exc:
+        action = {"ok": False, "message": exc.error}
+    result = collect_status(ctx, full=True)
+    result["action"] = action
+    return result
+
+
 def build_ctx(env):
     origin = normalize_origin(env.get("OMAPIHOLE_URL", ""))
     password_file = expand_path(env.get("OMAPIHOLE_PASSWORD_FILE") or DEFAULT_PASSWORD_FILE)
@@ -657,6 +723,13 @@ def dispatch(argv, env):
         if rest:
             raise SystemExit(usage("resume takes no arguments"))
         return do_resume(ctx)
+    if command == "allow":
+        if len(rest) != 1:
+            raise SystemExit(usage("allow requires one domain"))
+        domain = normalize_domain(rest[0])
+        if not domain:
+            raise SystemExit(usage("allow needs a plain domain name"))
+        return do_allow(ctx, domain)
     raise SystemExit(usage("unknown command"))
 
 
