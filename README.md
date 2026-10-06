@@ -94,6 +94,6 @@ That removes the plugin checkout. It does not delete `~/.config/omapihole/passwo
 
 ```sh
 python3 -m unittest discover -s tests -v
-node --test tests/test_model.js
+node --test tests/test_*.js
 omarchy plugin validate .
 ```

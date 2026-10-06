@@ -27,8 +27,8 @@ jobs:
       - name: Helper tests
         run: python3 -m unittest discover -s tests -v
 
-      - name: Model tests
-        run: node --test tests/test_model.js
+      - name: Model and popup color tests
+        run: node --test tests/test_*.js
 
       - name: Helper compiles
         run: python3 -m py_compile scripts/omapihole
