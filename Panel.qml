@@ -32,8 +32,12 @@ Panel {
     readonly property bool helperBusy: hostWidget ? hostWidget.helperBusy === true : false
     readonly property var pingResult: hostWidget ? hostWidget.lastPing : null
     readonly property bool pinging: hostWidget ? hostWidget.pinging === true : false
-    readonly property color mutedFg: Color.muted
-    readonly property color urgentFg: root.bar ? root.bar.urgent : Color.urgent
+    // The transparent bar adapts its text to the wallpaper; the popup has
+    // its own background and text palette. Derive secondary text from that
+    // palette too, since terminal muted colors can disappear on the popup.
+    readonly property color popupFg: Color.popups.text
+    readonly property color mutedFg: Util.alpha(root.popupFg, 0.7)
+    readonly property color urgentFg: Color.urgent
     readonly property bool holeOpen: shownState === "paused" || shownState === "disabled"
 
     property string draftUrl: ""
@@ -270,7 +274,7 @@ Panel {
                             Text {
                                 textFormat: Text.PlainText
                                 text: Model.headerStatus(root.snapshot, root.nowSec, root.apiOrigin)
-                                color: root.holeOpen ? root.urgentFg : root.barForeground
+                                color: root.holeOpen ? root.urgentFg : root.popupFg
                                 font.family: root.bar ? root.bar.fontFamily : Style.font.family
                                 font.pixelSize: Style.font.body
                                 font.bold: true
@@ -306,7 +310,7 @@ Panel {
 
                             PanelActionButton {
                                 iconText: "\uF08E"
-                                foreground: root.barForeground
+                                foreground: root.popupFg
                                 hoverColor: Color.accent
                                 fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
                                 tooltipText: "Open dashboard"
@@ -322,7 +326,7 @@ Panel {
                         wrapMode: Text.WordWrap
                         textFormat: Text.PlainText
                         text: "Your home Pi-hole is unavailable from this network. Showing last-known data."
-                        color: root.barForeground
+                        color: root.popupFg
                         font.family: root.bar ? root.bar.fontFamily : Style.font.family
                         font.pixelSize: Style.font.bodySmall
                     }
@@ -342,7 +346,7 @@ Panel {
                         visible: (root.shownState === "offline" || root.shownState === "failed") && !root.showSetup
                         text: "Retry"
                         bordered: true
-                        foreground: root.barForeground
+                        foreground: root.popupFg
                         fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
                         onClicked: if (root.hostWidget) root.hostWidget.refresh()
                     }
@@ -386,7 +390,7 @@ Panel {
                             id: urlField
                             width: parent.width
                             placeholderText: "http://pi.hole"
-                            foreground: root.barForeground
+                            foreground: root.popupFg
                             onTextChanged: root.draftUrl = text
                         }
 
@@ -402,7 +406,7 @@ Panel {
                             id: passwordField
                             width: parent.width
                             placeholderText: Model.DEFAULT_PASSWORD_FILE
-                            foreground: root.barForeground
+                            foreground: root.popupFg
                             onTextChanged: root.draftPasswordFile = text
                         }
 
@@ -418,7 +422,7 @@ Panel {
                             id: dashboardField
                             width: parent.width
                             placeholderText: "defaults to URL + /admin/"
-                            foreground: root.barForeground
+                            foreground: root.popupFg
                             onTextChanged: root.draftDashboardUrl = text
                         }
 
@@ -427,7 +431,7 @@ Panel {
                             label: "Allow insecure TLS"
                             description: "Skip certificate checks for self-signed LAN HTTPS."
                             checked: root.draftAllowInsecure
-                            foreground: root.barForeground
+                            foreground: root.popupFg
                             onClicked: root.draftAllowInsecure = !root.draftAllowInsecure
                         }
 
@@ -437,7 +441,7 @@ Panel {
                             wrapMode: Text.WordWrap
                             textFormat: Text.PlainText
                             text: root.testMessage
-                            color: root.pingResult && root.pingResult.ok ? root.barForeground : root.urgentFg
+                            color: root.pingResult && root.pingResult.ok ? root.popupFg : root.urgentFg
                             font.family: root.bar ? root.bar.fontFamily : Style.font.family
                             font.pixelSize: Style.font.bodySmall
                         }
@@ -448,7 +452,7 @@ Panel {
                             Button {
                                 text: root.pinging ? "Testing…" : "Test connection"
                                 bordered: true
-                                foreground: root.barForeground
+                                foreground: root.popupFg
                                 fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
                                 enabled: !root.pinging
                                 iconSpinning: root.pinging
@@ -458,7 +462,7 @@ Panel {
                             Button {
                                 text: "Save"
                                 bordered: true
-                                foreground: root.barForeground
+                                foreground: root.popupFg
                                 fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
                                 onClicked: root.saveDrafts()
                             }
@@ -479,7 +483,7 @@ Panel {
                                 anchors.horizontalCenter: parent.horizontalCenter
                                 textFormat: Text.PlainText
                                 text: root.queries ? Model.formatPercent(root.queries.percent_blocked, 1) : "—"
-                                color: root.barForeground
+                                color: root.popupFg
                                 font.family: root.bar ? root.bar.fontFamily : Style.font.family
                                 font.pixelSize: 48
                                 font.bold: true
@@ -529,7 +533,7 @@ Panel {
                                     Text {
                                         textFormat: Text.PlainText
                                         text: modelData.value
-                                        color: root.barForeground
+                                        color: root.popupFg
                                         font.family: root.bar ? root.bar.fontFamily : Style.font.family
                                         font.pixelSize: Style.font.title
                                     }
@@ -566,7 +570,7 @@ Panel {
                                 text: "Resume"
                                 bordered: true
                                 hasCursor: root.chipIndex === 0
-                                foreground: root.barForeground
+                                foreground: root.popupFg
                                 fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
                                 onClicked: root.runChip("resume")
                                 onHovered: function (hot) { if (hot) root.chipIndex = 0 }
@@ -586,7 +590,7 @@ Panel {
                                     text: modelData.label
                                     bordered: true
                                     hasCursor: root.chipIndex === index
-                                    foreground: root.barForeground
+                                    foreground: root.popupFg
                                     fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
                                     onClicked: root.runChip(modelData.id)
                                     onHovered: function (hot) { if (hot) root.chipIndex = index }
@@ -601,7 +605,7 @@ Panel {
 
                             PanelSectionHeader {
                                 text: "last blocked"
-                                foreground: root.barForeground
+                                foreground: root.popupFg
                                 fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
                             }
 
@@ -614,7 +618,7 @@ Panel {
                                     textFormat: Text.PlainText
                                     text: modelData
                                     elide: Text.ElideRight
-                                    color: root.barForeground
+                                    color: root.popupFg
                                     font.family: root.bar ? root.bar.fontFamily : Style.font.family
                                     font.pixelSize: Style.font.body
                                 }
