@@ -27,12 +27,23 @@ Panel {
     readonly property var blockedList: Model.recentBlocked(snapshot)
     readonly property string hostName: hostWidget ? hostWidget.hostName : ""
     readonly property string apiOrigin: hostWidget ? hostWidget.apiOrigin : ""
-    readonly property bool showSetup: shownState === "unconfigured" || shownState === "auth"
-    readonly property bool awayFromHome: shownState === "offline"
-        && Model.isPrivateIPv4ApiOrigin(apiOrigin)
+    // Setup is forced when there is nothing to show or the credentials are
+    // wrong; otherwise the header gear opens it on demand.
+    readonly property bool needsSetup: shownState === "unconfigured" || shownState === "auth"
+    readonly property bool showSetup: needsSetup || settingsOpen
+    readonly property bool canControl: shownState === "enabled" || shownState === "paused"
+        || shownState === "disabled"
+    readonly property bool awayFromHome: Model.isAway(snapshot, apiOrigin)
     readonly property bool helperBusy: hostWidget ? hostWidget.helperBusy === true : false
     readonly property var pingResult: hostWidget ? hostWidget.lastPing : null
     readonly property bool pinging: hostWidget ? hostWidget.pinging === true : false
+    readonly property var notice: hostWidget ? hostWidget.notice : null
+    readonly property var dataAge: Model.dataAge(snapshot, nowSec)
+    readonly property string freshness: {
+        if (helperBusy) return "Refreshing…"
+        if (dataAge === null) return ""
+        return (stale ? "Last data " : "Updated ") + Model.formatAge(dataAge)
+    }
     // The transparent bar adapts its text to the wallpaper; the popup has
     // its own palette. Older shells use the foundational palette instead.
     readonly property color popupFg: Color.popups ? Color.popups.text : Color.foreground
@@ -41,6 +52,7 @@ Panel {
     // changing its alpha. Contrast is measured against the popup's base RGB.
     readonly property color mutedFg: PopupColors.readableMuted(Color.muted, root.popupFg, root.popupBg)
     readonly property color urgentFg: root.bar ? root.bar.urgent : Color.urgent
+    readonly property string fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
     readonly property bool holeOpen: shownState === "paused" || shownState === "disabled"
 
     property string draftUrl: ""
@@ -48,8 +60,13 @@ Panel {
     property string draftDashboardUrl: ""
     property bool draftAllowInsecure: false
     property bool awaitingTest: false
+    property bool settingsOpen: false
     property int chipIndex: 0
     property string testMessage: ""
+    property bool testOk: false
+    // A blocked domain whose Allow button was pressed once; a second press
+    // within Model.ALLOW_CONFIRM_MS adds it to the allowlist.
+    property string allowArmed: ""
 
     readonly property var chips: {
         if (shownState === "paused") return [{ id: "resume", label: "Resume" }]
@@ -59,26 +76,24 @@ Panel {
                 { id: "30", label: "30s" },
                 { id: "300", label: "5m" },
                 { id: "900", label: "15m" },
-                { id: "enable", label: "Enable" }
+                { id: "3600", label: "1h" }
             ]
         return []
     }
 
     onChipsChanged: if (chipIndex >= chips.length) chipIndex = 0
 
+    // BarWidget.onOpenedChanged starts the full refresh and this panel's
+    // onOpenedChanged loads the drafts, so open paths only show the panel.
     function open() {
         openedFromHotkey = false
         setCenterHoverRevealSuppressed(false)
         root.controller.show()
-        loadDrafts()
-        if (hostWidget && hostWidget.configured) hostWidget.refreshFull()
     }
 
     function openFromHotkey() {
         openedFromHotkey = true
         root.controller.show()
-        loadDrafts()
-        if (hostWidget && hostWidget.configured) hostWidget.refreshFull()
         Qt.callLater(function () {
             if (root.opened) setCenterHoverRevealSuppressed(true)
         })
@@ -126,6 +141,7 @@ Panel {
         draftDashboardUrl = String(setting("dashboardUrl", "") || "")
         draftAllowInsecure = Model.parseBool(setting("allowInsecure", false), false)
         testMessage = ""
+        testOk = false
         awaitingTest = false
         if (urlField) urlField.text = draftUrl
         if (passwordField) passwordField.text = draftPasswordFile
@@ -142,8 +158,14 @@ Panel {
         })
     }
 
+    function saveOnly() {
+        saveDrafts()
+        testOk = true
+        testMessage = "Saved."
+    }
+
     function testConnection() {
-        if (!hostWidget) return
+        if (!hostWidget || pinging) return
         awaitingTest = true
         testMessage = ""
         hostWidget.pingWith({
@@ -153,14 +175,34 @@ Panel {
         })
     }
 
+    function openSettings() {
+        loadDrafts()
+        settingsOpen = true
+        Qt.callLater(function () { if (urlField) urlField.forceActiveFocus() })
+    }
+
+    function closeSettings() {
+        settingsOpen = false
+        testMessage = ""
+        if (keyCatcher) keyCatcher.forceActiveFocus()
+    }
+
+    function leaveField() {
+        if (keyCatcher) keyCatcher.forceActiveFocus()
+    }
+
     onPingResultChanged: {
         if (!awaitingTest || !pingResult) return
         awaitingTest = false
-        if (pingResult.ok) {
-            testMessage = "Connected."
+        testOk = pingResult.ok === true
+        if (testOk) {
+            testMessage = "Connected and saved."
             saveDrafts()
+            // Saving identical settings changes nothing, so the widget would
+            // not re-poll on its own (e.g. after fixing the password file).
+            if (hostWidget) hostWidget.refreshFull()
         } else {
-            testMessage = pingResult.error ? String(pingResult.error) : "Connection failed."
+            testMessage = pingResult.error ? Model.sentence(pingResult.error) : "Connection failed."
         }
     }
 
@@ -170,10 +212,15 @@ Panel {
         else if (id === "30") hostWidget.pause(30)
         else if (id === "300") hostWidget.pause(300)
         else if (id === "900") hostWidget.pause(900)
+        else if (id === "3600") hostWidget.pause(3600)
     }
 
     function activateFocusedChip() {
-        if (showSetup || chips.length === 0) return
+        if (showSetup) {
+            testConnection()
+            return
+        }
+        if (chips.length === 0) return
         var i = Math.max(0, Math.min(chipIndex, chips.length - 1))
         runChip(chips[i].id)
     }
@@ -186,6 +233,18 @@ Panel {
         chipIndex = next
     }
 
+    function pressAllow(domain) {
+        if (!hostWidget) return
+        if (allowArmed === domain) {
+            allowArmed = ""
+            allowDisarm.stop()
+            hostWidget.allow(domain)
+            return
+        }
+        allowArmed = domain
+        allowDisarm.restart()
+    }
+
     function handleTextKey(t) {
         if (t === "r" || t === "R") {
             if (hostWidget) {
@@ -195,11 +254,11 @@ Panel {
             return
         }
         var pause = Model.pauseSecondsForKey(t)
-        if (pause && !showSetup) {
+        if (pause && canControl && !showSetup) {
             if (hostWidget) hostWidget.pause(pause)
             return
         }
-        if ((t === "e" || t === "E") && !showSetup) {
+        if ((t === "e" || t === "E") && holeOpen && !showSetup) {
             if (hostWidget) hostWidget.resume()
             return
         }
@@ -207,14 +266,23 @@ Panel {
             if (hostWidget) hostWidget.openDashboard()
             return
         }
-        if ((t === "s" || t === "S") && showSetup) {
-            if (urlField) urlField.forceActiveFocus()
+        if (t === "s" || t === "S") {
+            if (showSetup) urlField.forceActiveFocus()
+            else openSettings()
         }
     }
 
     onOpenedChanged: if (opened) {
+        settingsOpen = false
+        allowArmed = ""
         loadDrafts()
         Qt.callLater(function () { if (keyCatcher) keyCatcher.forceActiveFocus() })
+    }
+
+    Timer {
+        id: allowDisarm
+        interval: Model.ALLOW_CONFIRM_MS
+        onTriggered: root.allowArmed = ""
     }
 
     KeyboardPanel {
@@ -231,7 +299,10 @@ Panel {
             id: keyCatcher
             anchors.fill: parent
             blocked: urlField.activeFocus || passwordField.activeFocus || dashboardField.activeFocus
-            onCloseRequested: root.close()
+            onCloseRequested: {
+                if (root.settingsOpen) root.closeSettings()
+                else root.close()
+            }
             onTabRequested: function (direction) { root.switchPanel(direction) }
             onMoveRequested: function (dx, dy) {
                 if (dx !== 0) root.moveChip(dx)
@@ -278,20 +349,9 @@ Panel {
                                 textFormat: Text.PlainText
                                 text: Model.headerStatus(root.snapshot, root.nowSec, root.apiOrigin)
                                 color: root.holeOpen ? root.urgentFg : root.popupFg
-                                font.family: root.bar ? root.bar.fontFamily : Style.font.family
+                                font.family: root.fontFamily
                                 font.pixelSize: Style.font.body
                                 font.bold: true
-                                anchors.verticalCenter: parent.verticalCenter
-                            }
-
-                            Text {
-                                visible: root.stale
-                                textFormat: Text.PlainText
-                                text: "stale"
-                                color: root.mutedFg
-                                font.family: root.bar ? root.bar.fontFamily : Style.font.family
-                                font.pixelSize: Style.font.caption
-                                font.italic: true
                                 anchors.verticalCenter: parent.verticalCenter
                             }
                         }
@@ -306,42 +366,55 @@ Panel {
                                 textFormat: Text.PlainText
                                 text: root.hostName
                                 color: root.mutedFg
-                                font.family: root.bar ? root.bar.fontFamily : Style.font.family
+                                font.family: root.fontFamily
                                 font.pixelSize: Style.font.bodySmall
                                 anchors.verticalCenter: parent.verticalCenter
                             }
 
                             PanelActionButton {
-                                iconText: "\uF08E"
+                                iconText: ""
                                 foreground: root.popupFg
                                 hoverColor: Color.accent
-                                fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
-                                tooltipText: "Open dashboard"
+                                fontFamily: root.fontFamily
+                                tooltipText: "Open dashboard (o)"
                                 enabled: !!(root.hostWidget && root.hostWidget.dashboardTarget)
                                 onClicked: if (root.hostWidget) root.hostWidget.openDashboard()
+                            }
+
+                            PanelActionButton {
+                                visible: !root.needsSetup
+                                iconText: ""
+                                foreground: root.settingsOpen ? Color.accent : root.popupFg
+                                hoverColor: Color.accent
+                                fontFamily: root.fontFamily
+                                tooltipText: root.settingsOpen ? "Close settings" : "Settings (s)"
+                                onClicked: root.settingsOpen ? root.closeSettings() : root.openSettings()
                             }
                         }
                     }
 
                     Text {
-                        visible: root.awayFromHome
+                        visible: root.awayFromHome && !root.showSetup
                         width: parent.width
                         wrapMode: Text.WordWrap
                         textFormat: Text.PlainText
-                        text: "Your home Pi-hole is unavailable from this network. Showing last-known data."
+                        text: "Your home Pi-hole is unavailable from this network."
+                            + (root.dataAge !== null && root.hasNumbers
+                                ? " Showing data from " + Model.formatAge(root.dataAge) + "."
+                                : "")
                         color: root.popupFg
-                        font.family: root.bar ? root.bar.fontFamily : Style.font.family
+                        font.family: root.fontFamily
                         font.pixelSize: Style.font.bodySmall
                     }
 
                     Text {
-                        visible: root.snapshot && root.snapshot.error && !root.showSetup
+                        visible: !!(root.snapshot && root.snapshot.error) && !root.showSetup && !root.awayFromHome
                         width: parent.width
                         wrapMode: Text.WordWrap
                         textFormat: Text.PlainText
-                        text: root.snapshot && root.snapshot.error ? String(root.snapshot.error) : ""
+                        text: root.snapshot && root.snapshot.error ? Model.sentence(root.snapshot.error) : ""
                         color: root.mutedFg
-                        font.family: root.bar ? root.bar.fontFamily : Style.font.family
+                        font.family: root.fontFamily
                         font.pixelSize: Style.font.bodySmall
                     }
 
@@ -350,8 +423,8 @@ Panel {
                         text: "Retry"
                         bordered: true
                         foreground: root.popupFg
-                        fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
-                        onClicked: if (root.hostWidget) root.hostWidget.refresh()
+                        fontFamily: root.fontFamily
+                        onClicked: if (root.hostWidget) root.hostWidget.refreshFull()
                     }
 
                     // ---- Setup form
@@ -360,31 +433,57 @@ Panel {
                         width: parent.width
                         spacing: Style.space(10)
 
-                        Text {
+                        Column {
+                            visible: root.needsSetup
                             width: parent.width
-                            wrapMode: Text.WordWrap
-                            textFormat: Text.PlainText
-                            text: "Generate a Pi-hole app password (Settings → Web interface / API → app password), put it in the file, chmod 600. Web login + 2FA will not work. A Pi-hole has exactly one app password. Generating a new one replaces the old one and invalidates every active session — if Home Assistant or another integration already uses it, reuse that password instead of generating a fresh one. Do not keep the file in a directory you commit to a dotfiles repo."
-                            color: root.mutedFg
-                            font.family: root.bar ? root.bar.fontFamily : Style.font.family
-                            font.pixelSize: Style.font.bodySmall
+                            spacing: Style.space(4)
+
+                            Repeater {
+                                model: [
+                                    "1. On the Pi-hole: Settings → Web interface / API → app password.",
+                                    "2. Save it in the password file below and chmod 600 it. Keep it out of any dotfiles repo.",
+                                    "3. Enter the API URL, then Test connection."
+                                ]
+
+                                Text {
+                                    required property string modelData
+                                    width: parent.width
+                                    wrapMode: Text.WordWrap
+                                    textFormat: Text.PlainText
+                                    text: modelData
+                                    color: root.popupFg
+                                    font.family: root.fontFamily
+                                    font.pixelSize: Style.font.bodySmall
+                                }
+                            }
+
+                            Text {
+                                width: parent.width
+                                topPadding: Style.space(4)
+                                wrapMode: Text.WordWrap
+                                textFormat: Text.PlainText
+                                text: "A Pi-hole has one app password, and generating a new one signs out everything using the old one. If another integration already has it, reuse it. The web password with 2FA will not work."
+                                color: root.mutedFg
+                                font.family: root.fontFamily
+                                font.pixelSize: Style.font.caption
+                            }
                         }
 
                         Text {
-                            visible: root.shownState === "auth" && root.snapshot && root.snapshot.error
+                            visible: root.shownState === "auth" && !!(root.snapshot && root.snapshot.error)
                             width: parent.width
                             wrapMode: Text.WordWrap
                             textFormat: Text.PlainText
-                            text: root.snapshot && root.snapshot.error ? String(root.snapshot.error) : ""
+                            text: root.snapshot && root.snapshot.error ? Model.sentence(root.snapshot.error) : ""
                             color: root.urgentFg
-                            font.family: root.bar ? root.bar.fontFamily : Style.font.family
+                            font.family: root.fontFamily
                             font.pixelSize: Style.font.bodySmall
                         }
 
                         Text {
                             text: "URL"
                             color: root.mutedFg
-                            font.family: root.bar ? root.bar.fontFamily : Style.font.family
+                            font.family: root.fontFamily
                             font.pixelSize: Style.font.caption
                             font.bold: true
                         }
@@ -392,15 +491,19 @@ Panel {
                         TextField {
                             id: urlField
                             width: parent.width
-                            placeholderText: "http://pi.hole"
+                            placeholderText: "https://pi.hole"
                             foreground: root.popupFg
                             onTextChanged: root.draftUrl = text
+                            onAccepted: root.testConnection()
+                            Keys.onEscapePressed: root.leaveField()
+                            KeyNavigation.tab: passwordField
+                            KeyNavigation.backtab: dashboardField
                         }
 
                         Text {
                             text: "Password file"
                             color: root.mutedFg
-                            font.family: root.bar ? root.bar.fontFamily : Style.font.family
+                            font.family: root.fontFamily
                             font.pixelSize: Style.font.caption
                             font.bold: true
                         }
@@ -411,12 +514,16 @@ Panel {
                             placeholderText: Model.DEFAULT_PASSWORD_FILE
                             foreground: root.popupFg
                             onTextChanged: root.draftPasswordFile = text
+                            onAccepted: root.testConnection()
+                            Keys.onEscapePressed: root.leaveField()
+                            KeyNavigation.tab: dashboardField
+                            KeyNavigation.backtab: urlField
                         }
 
                         Text {
                             text: "Dashboard URL (optional)"
                             color: root.mutedFg
-                            font.family: root.bar ? root.bar.fontFamily : Style.font.family
+                            font.family: root.fontFamily
                             font.pixelSize: Style.font.caption
                             font.bold: true
                         }
@@ -427,6 +534,10 @@ Panel {
                             placeholderText: "defaults to URL + /admin/"
                             foreground: root.popupFg
                             onTextChanged: root.draftDashboardUrl = text
+                            onAccepted: root.testConnection()
+                            Keys.onEscapePressed: root.leaveField()
+                            KeyNavigation.tab: urlField
+                            KeyNavigation.backtab: passwordField
                         }
 
                         Toggle {
@@ -444,8 +555,8 @@ Panel {
                             wrapMode: Text.WordWrap
                             textFormat: Text.PlainText
                             text: root.testMessage
-                            color: root.pingResult && root.pingResult.ok ? root.popupFg : root.urgentFg
-                            font.family: root.bar ? root.bar.fontFamily : Style.font.family
+                            color: root.testOk ? root.popupFg : root.urgentFg
+                            font.family: root.fontFamily
                             font.pixelSize: Style.font.bodySmall
                         }
 
@@ -456,9 +567,10 @@ Panel {
                                 text: root.pinging ? "Testing…" : "Test connection"
                                 bordered: true
                                 foreground: root.popupFg
-                                fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
+                                fontFamily: root.fontFamily
                                 enabled: !root.pinging
                                 iconSpinning: root.pinging
+                                tooltipText: "Test, and save on success (Enter)"
                                 onClicked: root.testConnection()
                             }
 
@@ -466,9 +578,29 @@ Panel {
                                 text: "Save"
                                 bordered: true
                                 foreground: root.popupFg
-                                fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
-                                onClicked: root.saveDrafts()
+                                fontFamily: root.fontFamily
+                                tooltipText: "Save without testing"
+                                onClicked: root.saveOnly()
                             }
+
+                            Button {
+                                visible: root.settingsOpen && !root.needsSetup
+                                text: "Done"
+                                bordered: true
+                                foreground: root.popupFg
+                                fontFamily: root.fontFamily
+                                onClicked: root.closeSettings()
+                            }
+                        }
+
+                        Text {
+                            width: parent.width
+                            wrapMode: Text.WordWrap
+                            textFormat: Text.PlainText
+                            text: "Enter tests · Tab next field · Esc leaves a field"
+                            color: root.mutedFg
+                            font.family: root.fontFamily
+                            font.pixelSize: Style.font.caption
                         }
                     }
 
@@ -487,28 +619,55 @@ Panel {
                                 textFormat: Text.PlainText
                                 text: root.queries ? Model.formatPercent(root.queries.percent_blocked, 1) : "—"
                                 color: root.popupFg
-                                font.family: root.bar ? root.bar.fontFamily : Style.font.family
-                                font.pixelSize: 48
+                                font.family: root.fontFamily
+                                // 48px at the default size; follows [font] base-size.
+                                font.pixelSize: Math.round(Style.font.display * 2)
                                 font.bold: true
                             }
 
                             Text {
                                 anchors.horizontalCenter: parent.horizontalCenter
-                                text: "blocked today"
+                                text: "blocked · last 24h"
                                 color: root.mutedFg
-                                font.family: root.bar ? root.bar.fontFamily : Style.font.family
+                                font.family: root.fontFamily
                                 font.pixelSize: Style.font.caption
                                 font.letterSpacing: 1
                             }
                         }
 
-                        Sparkline {
+                        Column {
                             visible: root.sparkBars.length > 0
                             width: parent.width
-                            height: Style.space(36)
-                            bars: root.sparkBars
-                            mutedColor: root.mutedFg
-                            accentColor: Color.accent
+                            spacing: Style.space(2)
+
+                            Sparkline {
+                                width: parent.width
+                                height: Style.space(36)
+                                bars: root.sparkBars
+                                mutedColor: root.mutedFg
+                                accentColor: Color.accent
+                            }
+
+                            Item {
+                                width: parent.width
+                                height: sparkStart.implicitHeight
+
+                                Text {
+                                    id: sparkStart
+                                    anchors.left: parent.left
+                                    text: "24h ago"
+                                    color: root.mutedFg
+                                    font.family: root.fontFamily
+                                    font.pixelSize: Style.font.caption
+                                }
+                                Text {
+                                    anchors.right: parent.right
+                                    text: "now"
+                                    color: root.mutedFg
+                                    font.family: root.fontFamily
+                                    font.pixelSize: Style.font.caption
+                                }
+                            }
                         }
 
                         Grid {
@@ -522,10 +681,10 @@ Panel {
                                 model: [
                                     { value: root.queries ? Model.compactNumber(root.queries.total) : "—", label: "queries" },
                                     { value: root.queries ? Model.compactNumber(root.queries.blocked) : "—", label: "blocked" },
-                                    { value: root.queries ? Model.compactNumber(root.queries.unique_domains) : "—", label: "domains" },
+                                    { value: root.queries ? Model.compactNumber(root.queries.unique_domains) : "—", label: "unique domains" },
                                     { value: root.snapshot && root.snapshot.gravity
                                         ? Model.compactNumber(root.snapshot.gravity.domains_being_blocked)
-                                        : "—", label: "gravity" }
+                                        : "—", label: "on blocklists" }
                                 ]
 
                                 Column {
@@ -537,13 +696,13 @@ Panel {
                                         textFormat: Text.PlainText
                                         text: modelData.value
                                         color: root.popupFg
-                                        font.family: root.bar ? root.bar.fontFamily : Style.font.family
+                                        font.family: root.fontFamily
                                         font.pixelSize: Style.font.title
                                     }
                                     Text {
                                         text: modelData.label
                                         color: root.mutedFg
-                                        font.family: root.bar ? root.bar.fontFamily : Style.font.family
+                                        font.family: root.fontFamily
                                         font.pixelSize: Style.font.caption
                                     }
                                 }
@@ -562,7 +721,7 @@ Panel {
                                 textFormat: Text.PlainText
                                 text: "resumes in " + Model.formatCountdown(Math.max(0, Model.remainingSeconds(root.snapshot, root.nowSec) || 0))
                                 color: root.urgentFg
-                                font.family: root.bar ? root.bar.fontFamily : Style.font.family
+                                font.family: root.fontFamily
                                 font.pixelSize: Style.font.body
                             }
 
@@ -574,7 +733,8 @@ Panel {
                                 bordered: true
                                 hasCursor: root.chipIndex === 0
                                 foreground: root.popupFg
-                                fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
+                                fontFamily: root.fontFamily
+                                tooltipText: "Resume blocking (e)"
                                 onClicked: root.runChip("resume")
                                 onHovered: function (hot) { if (hot) root.chipIndex = 0 }
                             }
@@ -594,7 +754,10 @@ Panel {
                                     bordered: true
                                     hasCursor: root.chipIndex === index
                                     foreground: root.popupFg
-                                    fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
+                                    fontFamily: root.fontFamily
+                                    tooltipText: modelData.id === "enable"
+                                        ? "Enable blocking (e)"
+                                        : "Pause blocking for " + modelData.label + " (" + (index + 1) + ")"
                                     onClicked: root.runChip(modelData.id)
                                     onHovered: function (hot) { if (hot) root.chipIndex = index }
                                 }
@@ -607,26 +770,83 @@ Panel {
                             spacing: Style.space(4)
 
                             PanelSectionHeader {
-                                text: "last blocked"
+                                text: "last blocked · click to copy"
                                 foreground: root.popupFg
-                                fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
+                                fontFamily: root.fontFamily
                             }
 
                             Repeater {
                                 model: root.blockedList
 
-                                Text {
+                                Item {
+                                    id: blockedRow
                                     required property string modelData
+                                    readonly property bool armed: root.allowArmed === modelData
                                     width: parent.width
-                                    textFormat: Text.PlainText
-                                    text: modelData
-                                    elide: Text.ElideRight
-                                    color: root.popupFg
-                                    font.family: root.bar ? root.bar.fontFamily : Style.font.family
-                                    font.pixelSize: Style.font.body
+                                    height: Math.max(domainText.implicitHeight, allowBtn.implicitHeight)
+
+                                    Text {
+                                        id: domainText
+                                        anchors.left: parent.left
+                                        anchors.right: allowBtn.left
+                                        anchors.rightMargin: Style.space(8)
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        textFormat: Text.PlainText
+                                        text: blockedRow.modelData
+                                        elide: Text.ElideRight
+                                        color: copyArea.containsMouse ? Color.accent : root.popupFg
+                                        font.family: root.fontFamily
+                                        font.pixelSize: Style.font.body
+
+                                        MouseArea {
+                                            id: copyArea
+                                            anchors.fill: parent
+                                            hoverEnabled: true
+                                            cursorShape: Qt.PointingHandCursor
+                                            onClicked: if (root.hostWidget) root.hostWidget.copyText(blockedRow.modelData)
+                                        }
+                                    }
+
+                                    Button {
+                                        id: allowBtn
+                                        anchors.right: parent.right
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        text: blockedRow.armed ? "Confirm" : "Allow"
+                                        bordered: true
+                                        selected: blockedRow.armed
+                                        foreground: blockedRow.armed ? root.urgentFg : root.popupFg
+                                        fontFamily: root.fontFamily
+                                        fontSize: Style.font.caption
+                                        verticalPadding: Style.space(2)
+                                        tooltipText: blockedRow.armed
+                                            ? "Click again to add to the Pi-hole allowlist"
+                                            : "Allow this domain on the Pi-hole"
+                                        onClicked: root.pressAllow(blockedRow.modelData)
+                                    }
                                 }
                             }
                         }
+                    }
+
+                    Text {
+                        visible: !!root.notice
+                        width: parent.width
+                        wrapMode: Text.WordWrap
+                        textFormat: Text.PlainText
+                        text: root.notice ? root.notice.text : ""
+                        color: root.notice && !root.notice.ok ? root.urgentFg : root.popupFg
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.font.bodySmall
+                    }
+
+                    Text {
+                        visible: !root.showSetup && root.freshness !== ""
+                        anchors.horizontalCenter: parent.horizontalCenter
+                        textFormat: Text.PlainText
+                        text: root.freshness
+                        color: root.mutedFg
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.font.caption
                     }
                 }
             }

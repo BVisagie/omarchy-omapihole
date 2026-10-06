@@ -213,13 +213,108 @@ test("tooltip prefers the error string on failure", () => {
     recent_blocked: ["tracker.example.com"]
   }, { url: "http://pi.hole" }, 0);
   assert.match(text, /pi\.hole/);
-  assert.match(text, /48\.2k queries today/);
+  assert.match(text, /48\.2k queries \(24h\)/);
   assert.match(text, /last tracker\.example\.com/);
 });
 
-test("pauseSecondsForKey maps 1/2/3", () => {
+test("pauseSecondsForKey maps 1/2/3/4", () => {
   assert.equal(Model.pauseSecondsForKey("1"), 30);
   assert.equal(Model.pauseSecondsForKey("2"), 300);
   assert.equal(Model.pauseSecondsForKey("3"), 900);
-  assert.equal(Model.pauseSecondsForKey("4"), 0);
+  assert.equal(Model.pauseSecondsForKey("4"), 3600);
+  assert.equal(Model.pauseSecondsForKey("5"), 0);
+});
+
+test("a bar poll keeps the open panel's history and recent blocks", () => {
+  const full = Model.applySuccessfulSnapshot({
+    ok: true,
+    state: "enabled",
+    queries: { total: 10, blocked: 2, percent_blocked: 20 },
+    history: historyPoints(6),
+    recent_blocked: ["ads.example"],
+    fetched_at: 100
+  });
+  const bar = Model.applySuccessfulSnapshot({
+    ok: true,
+    state: "paused",
+    timer: 30,
+    queries: { total: 11, blocked: 3, percent_blocked: 27 },
+    history: null,
+    recent_blocked: [],
+    fetched_at: 120
+  }, full);
+  assert.equal(bar.state, "paused");
+  assert.equal(bar.queries.total, 11);
+  assert.equal(Model.bucketHistory(bar.history).length, 2);
+  assert.deepEqual(Model.recentBlocked(bar), ["ads.example"]);
+  assert.equal(bar.data_at, 120);
+
+  // A later full fetch replaces them.
+  const fresh = Model.applySuccessfulSnapshot({
+    ok: true, state: "enabled", history: [], recent_blocked: ["b.example"], fetched_at: 180
+  }, bar);
+  assert.deepEqual(fresh.history, []);
+  assert.deepEqual(fresh.recent_blocked, ["b.example"]);
+
+  // Nothing is carried over from an unconfigured snapshot or after a host change.
+  const first = Model.applySuccessfulSnapshot({ ok: true, state: "enabled", history: null, recent_blocked: [] },
+    Model.unconfiguredSnapshot());
+  assert.equal(first.history, null);
+  const cleared = Model.withoutExtras(full);
+  assert.equal(cleared.history, null);
+  assert.deepEqual(cleared.recent_blocked, []);
+  assert.equal(full.history.length, 6);
+});
+
+test("failure merges remember when the numbers were fetched", () => {
+  const good = Model.applySuccessfulSnapshot({ ok: true, state: "enabled", queries: {}, fetched_at: 100 });
+  const once = Model.mergeSnapshot(good, { ok: false, state: "offline", error: "x", fetched_at: 400 });
+  const twice = Model.mergeSnapshot(once, { ok: false, state: "offline", error: "x", fetched_at: 700 });
+  assert.equal(twice.fetched_at, 700);
+  assert.equal(twice.data_at, 100);
+  assert.equal(Model.dataAge(twice, 7300), 7200);
+  assert.equal(Model.formatAge(Model.dataAge(twice, 7300)), "2h ago");
+  assert.equal(Model.dataAge(Model.unconfiguredSnapshot(), 10), null);
+});
+
+test("formatAge and sentence", () => {
+  assert.equal(Model.formatAge(2), "just now");
+  assert.equal(Model.formatAge(42), "42s ago");
+  assert.equal(Model.formatAge(300), "5m ago");
+  assert.equal(Model.formatAge(90000), "1d ago");
+  assert.equal(Model.sentence("connection refused"), "Connection refused");
+  assert.equal(Model.sentence(""), "");
+});
+
+test("queueAction never lets a read displace a waiting write", () => {
+  const bar = { type: "bar" };
+  const full = { type: "full" };
+  const pause = { type: "pause", seconds: 30 };
+  const resume = { type: "resume" };
+  assert.equal(Model.queueAction(null, bar), bar);
+  assert.equal(Model.queueAction(bar, full), full);
+  assert.equal(Model.queueAction(full, bar), full);
+  assert.equal(Model.queueAction(full, pause), pause);
+  assert.equal(Model.queueAction(pause, full), pause);
+  assert.equal(Model.queueAction(pause, bar), pause);
+  assert.equal(Model.queueAction(pause, resume), resume);
+  assert.equal(Model.queueAction(pause, null), pause);
+  assert.equal(Model.isWriteAction({ type: "allow", domain: "a.b" }), true);
+  assert.equal(Model.isWriteAction({ type: "ping" }), true);
+});
+
+test("away from home hides the bar label and explains the tooltip", () => {
+  const away = { state: "offline", error: "connection timed out" };
+  assert.equal(Model.barLabel(away, { url: "http://192.168.1.210" }, 0), "");
+  assert.equal(Model.barLabel(away, { url: "https://pi.hole" }, 0), "—");
+  assert.match(Model.tooltipText(away, { url: "http://192.168.1.210" }, 0), /not reachable from this network/);
+  assert.equal(Model.tooltipText(away, { url: "https://pi.hole" }, 0), "Connection timed out");
+  assert.match(Model.tooltipText(Model.unconfiguredSnapshot(), {}, 0), /Click to set up/);
+});
+
+test("normalizeDomain accepts plain names only", () => {
+  assert.equal(Model.normalizeDomain(" Ads.Example.COM. "), "ads.example.com");
+  assert.equal(Model.normalizeDomain("_dmarc.example.com"), "_dmarc.example.com");
+  for (const bad of ["", "ads example.com", "-a.example", "a/b", "*.example.com", "x".repeat(254), "a..b"])
+    assert.equal(Model.normalizeDomain(bad), "", bad);
 });

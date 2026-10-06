@@ -13,8 +13,8 @@ Pi-hole presence in the Omarchy bar: **state, pause, glance.**
 Not a dashboard. A shield in the bar, a pause in the panel.
 
 - See that blocking is on — or that you paused it for a broken site and forgot.
-- Pause for 30 seconds, 5 minutes, or 15 minutes without leaving the current window.
-- Glance at today’s block rate and the last three blocked domains.
+- Pause for 30 seconds, 5 minutes, 15 minutes, or an hour without leaving the current window, or from a keybinding.
+- Glance at the last 24 hours’ block rate and the last three blocked domains. Click a domain to copy it, or allow it after a confirming second click.
 
 Pi-hole v6 only. One instance. App password in a mode-600 file, never in `shell.json`.
 
@@ -35,7 +35,9 @@ The widget lands in the right bar section. Requires `python3` and `curl`.
 1. On the Pi-hole: **Settings → Web interface / API → app password**.
 2. Pi-hole supports one application password. If another integration already uses it, reuse that password where appropriate instead of needlessly rotating it.
 3. Write the password to `~/.config/omapihole/password` (outside `~/.config/omarchy/`, which is what people commit to dotfiles repos) and `chmod 600` that file. OmaPihole does not support an interactive TOTP prompt; use the Pi-hole application password when 2FA is enabled.
-4. Left-click the muted shield, fill in the API origin (prefer `https://pi.hole` or another HTTPS origin with a trusted certificate), and **Test connection**. Save on success, or Save explicitly. Use `http://` only on a trusted LAN: it sends the password and session ID without transport encryption.
+4. Left-click the muted shield, fill in the API origin (prefer `https://pi.hole` or another HTTPS origin with a trusted certificate), and **Test connection** (or press Enter). A successful test saves; **Save** stores the settings without testing. Use `http://` only on a trusted LAN: it sends the password and session ID without transport encryption.
+
+To change settings later, open the panel and click the gear (or press `s`).
 
 Passwordless / local-trust Pi-holes work with an empty or missing password file.
 
@@ -46,13 +48,27 @@ Passwordless / local-trust Pi-holes work with an empty or missing password file.
 | Left click | Open / close the panel |
 | Middle click | Refresh now |
 | Right click | Open the dashboard (`dashboardUrl`, or `url` + `/admin/`) |
-| `1` `2` `3` | Pause 30s / 5m / 15m |
-| `e` | Resume / enable |
+| `1` `2` `3` `4` | Pause 30s / 5m / 15m / 1h |
+| `e` | Resume / enable while paused or off |
 | `r` | Refresh |
 | `o` | Open dashboard |
-| Esc | Close |
+| `s` | Settings |
+| Esc | Leave a text field, close settings, then close the panel |
 
-While blocking is off, the bar shows a live countdown instead of the metric. At 0 it returns to `%` without sitting on `0:00`.
+While blocking is paused, the bar shows a live countdown instead of the metric. At 0 it returns to `%` without sitting on `0:00`. Away from home (a private-IP Pi-hole that is unreachable), the bar shows just the muted mark and the panel says how old the last-known numbers are.
+
+In **last blocked**, click a domain to copy it with `wl-copy`. **Allow** turns into **Confirm**; a second click within four seconds adds an exact allowlist entry with the comment “Allowed from OmaPihole”. Remove it from the Pi-hole’s Domains page if you change your mind.
+
+### Keybindings
+
+The widget answers IPC, so a key can pause without opening the panel. For example, in `~/.config/hypr/bindings.lua`:
+
+```lua
+o.bind("SUPER + ALT + P", "Pause Pi-hole for 5 minutes", "omarchy-shell bvisagie.omapihole pause 300")
+o.bind("SUPER + ALT + SHIFT + P", "Resume Pi-hole blocking", "omarchy-shell bvisagie.omapihole resume")
+```
+
+Other methods: `toggle`, `open`, `close`, `refresh`. `pause` takes 1–86400 seconds.
 
 ## Settings
 
