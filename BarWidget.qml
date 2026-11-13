@@ -35,6 +35,13 @@ BarWidget {
     property bool pinging: false
     // Short-lived feedback for one-shot actions (copy, allow) shown in the panel.
     property var notice: null
+    // After a 429, timed polls wait until backoffUntil; manual refreshes don't.
+    property int backoffSeconds: 0
+    property double backoffUntil: 0
+
+    function timedPollAllowed() {
+        return Date.now() / 1000 >= backoffUntil
+    }
 
     readonly property string shownState: Model.displayState(snapshot, nowSec)
     readonly property string pillLabel: Model.barLabel(snapshot, root.settings, nowSec)
@@ -262,6 +269,13 @@ BarWidget {
             error: "malformed helper output",
             fetched_at: Date.now() / 1000
         }
+        if (result.rate_limited === true) {
+            backoffSeconds = Model.nextBackoff(backoffSeconds)
+            backoffUntil = Date.now() / 1000 + backoffSeconds
+        } else if (result.ok === true) {
+            backoffSeconds = 0
+            backoffUntil = 0
+        }
         if (inFlight === "allow") {
             if (result.action) flash(result.action.message, result.action.ok === true)
             else if (result.error) flash(result.error, false)
@@ -374,7 +388,7 @@ BarWidget {
         running: root.configured
         repeat: true
         triggeredOnStart: true
-        onTriggered: if (root.isPrimary()) root.enqueue({ type: "bar" })
+        onTriggered: if (root.isPrimary() && root.timedPollAllowed()) root.enqueue({ type: "bar" })
     }
 
     Timer {
@@ -382,7 +396,7 @@ BarWidget {
         interval: 60000
         running: root.opened && root.configured
         repeat: true
-        onTriggered: root.enqueue({ type: "full" })
+        onTriggered: if (root.timedPollAllowed()) root.enqueue({ type: "full" })
     }
 
     Timer {

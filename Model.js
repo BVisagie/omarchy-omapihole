@@ -487,6 +487,17 @@ function isStale(snapshot) {
     return !!(snapshot && snapshot.stale)
 }
 
+// Seconds to wait after a rate-limited answer: 60, 120, then 300 at most.
+var BACKOFF_STEPS = [60, 120, 300]
+
+function nextBackoff(previousSeconds) {
+    var prev = Number(previousSeconds) || 0
+    for (var i = 0; i < BACKOFF_STEPS.length; i++) {
+        if (BACKOFF_STEPS[i] > prev) return BACKOFF_STEPS[i]
+    }
+    return BACKOFF_STEPS[BACKOFF_STEPS.length - 1]
+}
+
 function shouldPollZero(snapshot, nowSec, alreadyPolled) {
     if (alreadyPolled) return false
     if (canonicalState(snapshot) !== "paused") return false
@@ -550,6 +561,7 @@ if (typeof module !== "undefined") {
         applySuccessfulSnapshot: applySuccessfulSnapshot,
         isStale: isStale,
         shouldPollZero: shouldPollZero,
+        nextBackoff: nextBackoff,
         pauseSecondsForKey: pauseSecondsForKey
     }
 }

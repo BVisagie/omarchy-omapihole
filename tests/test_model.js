@@ -389,3 +389,10 @@ test("markup-shaped text stays literal on its way to every text sink", () => {
   assert.deepEqual(Model.recentBlocked(enabled), [markup]);
   assert.equal(Model.normalizeDomain(markup), "");
 });
+
+test("rate-limit backoff steps 60, 120, then holds at 300", () => {
+  assert.equal(Model.nextBackoff(0), 60);
+  assert.equal(Model.nextBackoff(60), 120);
+  assert.equal(Model.nextBackoff(120), 300);
+  assert.equal(Model.nextBackoff(300), 300);
+});

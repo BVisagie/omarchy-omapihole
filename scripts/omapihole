@@ -54,8 +54,8 @@ class OfflineError(HelperError):
 
 
 class FailedError(HelperError):
-    def __init__(self, error):
-        super().__init__("failed", error)
+    def __init__(self, error, extra=None):
+        super().__init__("failed", error, extra)
 
 
 def rate_limited(payload):
@@ -63,7 +63,9 @@ def rate_limited(payload):
     # editing credentials, so report it as a retryable failure rather than
     # "auth", which would put the panel back into setup.
     hint = error_hint(payload)
-    return FailedError("Pi-hole is rate-limiting: %s" % hint if hint else "Pi-hole is rate-limiting requests")
+    message = "Pi-hole is rate-limiting: %s" % hint if hint else "Pi-hole is rate-limiting requests"
+    # The widget backs off on this flag instead of polling into the limit.
+    return FailedError(message, {"rate_limited": True})
 
 
 # Tests replace this. Production talks to curl.
@@ -845,7 +847,7 @@ def run(argv, env):
     except OfflineError as exc:
         result = envelope("offline", error=str(exc))
     except FailedError as exc:
-        result = envelope("failed", error=str(exc))
+        result = envelope("failed", error=str(exc), **exc.extra)
     print_json(result)
     return 0
 

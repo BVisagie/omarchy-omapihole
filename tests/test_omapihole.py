@@ -309,6 +309,7 @@ class HelperTests(unittest.TestCase):
         )
         self.assertEqual(len(http.calls), 1)
         self.assertFalse(any(c["method"] == "POST" for c in http.calls))
+        self.assertTrue(result["rate_limited"])
 
     def test_429_rate_limit_on_login(self):
         self.write_password()
