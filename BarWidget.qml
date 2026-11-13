@@ -24,6 +24,7 @@ BarWidget {
     // What Model.js takes to word and number things in the current language.
     readonly property var loc: ({
         tr: function (key, english) { return root.strings.t(key, english) },
+        tn: function (key, count, english) { return root.strings.tn(key, count, english) },
         num: function (value, places) { return Commons.I18n.formatNumber(value, places) }
     })
     readonly property var coerced: Model.coerceSettings(root.settings)
@@ -185,8 +186,8 @@ BarWidget {
         pingWith(null)
     }
 
-    function openDashboard() {
-        var url = dashboardTarget
+    function openDashboard(page) {
+        var url = page ? Model.dashboardUrl(root.settings, page) : dashboardTarget
         if (!url) return
         Util.execArgv(["omarchy-launch-browser", url])
     }

@@ -433,3 +433,26 @@ test("the blocked list says whose blocks it shows, and keeps that across bar pol
   assert.equal(bar.recent_scope, "here");
   assert.equal(Model.withoutExtras(bar).recent_scope, null);
 });
+
+test("update and warning lines appear only when there is something to say", () => {
+  assert.equal(Model.updateLine({ updates: [] }), "");
+  assert.equal(Model.updateLine({ updates: null }), "");
+  assert.equal(
+    Model.updateLine({ updates: [{ name: "Core", local: "v6.5", remote: "v6.6" }, { name: "FTL", local: "v6.8", remote: "v6.9" }] }),
+    "Pi-hole update available: Core v6.5 → v6.6, FTL v6.8 → v6.9"
+  );
+  assert.equal(Model.warningsLine({ warnings: 0 }), "");
+  assert.equal(Model.warningsLine({ warnings: 1 }), "1 Pi-hole warning");
+  assert.equal(Model.warningsLine({ warnings: 3 }), "3 Pi-hole warnings");
+  assert.equal(Model.dashboardUrl({ url: "http://pi.hole" }, "messages"), "http://pi.hole/admin/messages");
+  assert.equal(Model.dashboardUrl({ url: "http://pi.hole", dashboardUrl: "https://d.lan/admin" }, "messages"), "https://d.lan/admin/messages");
+});
+
+test("a bar poll keeps the panel's update and warning extras", () => {
+  const full = Model.applyHelperResult(null, {
+    ok: true, state: "enabled", history: [], recent_blocked: [], updates: [{ name: "Core", local: "a", remote: "b" }], warnings: 2, fetched_at: 1
+  }, "o", "o");
+  const bar = Model.applyHelperResult(full, { ok: true, state: "enabled", history: null, updates: null, warnings: null, fetched_at: 2 }, "o", "o");
+  assert.equal(bar.warnings, 2);
+  assert.equal(bar.updates.length, 1);
+});

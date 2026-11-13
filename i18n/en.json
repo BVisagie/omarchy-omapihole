@@ -76,5 +76,11 @@
   "tooltip.off": "blocking off",
   "tooltip.queries": "%1 queries (24h)",
   "tooltip.resumes": "resumes in %1",
-  "tooltip.unconfigured": "OmaPihole: not configured. Click to set up."
+  "tooltip.unconfigured": "OmaPihole: not configured. Click to set up.",
+  "update.available": "Pi-hole update available: %1",
+  "update.part": "%1 %2 → %3",
+  "warnings.count": {
+    "one": "%1 Pi-hole warning",
+    "other": "%1 Pi-hole warnings"
+  }
 }

@@ -420,6 +420,43 @@ Panel {
                         onClicked: if (root.hostWidget) root.hostWidget.refreshFull()
                     }
 
+                    PlainText {
+                        id: updateText
+                        visible: text !== "" && !root.showSetup
+                        width: parent.width
+                        wrapMode: Text.WordWrap
+                        text: Model.updateLine(root.snapshot, root.loc)
+                        color: updateArea.containsMouse ? Commons.Color.accent : root.popupFg
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.font.bodySmall
+
+                        MouseArea {
+                            id: updateArea
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: if (root.hostWidget) root.hostWidget.openDashboard()
+                        }
+                    }
+
+                    PlainText {
+                        visible: text !== "" && !root.showSetup
+                        width: parent.width
+                        wrapMode: Text.WordWrap
+                        text: Model.warningsLine(root.snapshot, root.loc)
+                        color: warningsArea.containsMouse ? Commons.Color.accent : root.urgentFg
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.font.bodySmall
+
+                        MouseArea {
+                            id: warningsArea
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: if (root.hostWidget) root.hostWidget.openDashboard("messages")
+                        }
+                    }
+
                     // ---- Setup form
                     Column {
                         visible: root.showSetup

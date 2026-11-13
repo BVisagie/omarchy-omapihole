@@ -222,6 +222,8 @@ def envelope(state, error=None, ok=None, **fields):
         "history": None,
         "recent_blocked": [],
         "recent_scope": None,
+        "updates": None,
+        "warnings": None,
         "fetched_at": now_unix(),
     }
     if state == "enabled":
@@ -669,6 +671,7 @@ def collect_status(ctx, full):
     state, is_blocking, timer = map_blocking(blocking)
     history = None
     recent, scope = [], None
+    updates = warnings = None
     if full:
         try:
             history = map_history(api(ctx, "GET", "/api/history"))
@@ -677,6 +680,8 @@ def collect_status(ctx, full):
         except HelperError:
             history = None
         recent, scope = recent_blocks(ctx)
+        updates = optional(ctx, "/api/info/version", map_updates)
+        warnings = optional(ctx, "/api/info/messages/count", map_warning_count)
     return envelope(
         state,
         ok=True,
@@ -688,7 +693,62 @@ def collect_status(ctx, full):
         history=history if full else None,
         recent_blocked=recent if full else [],
         recent_scope=scope if full else None,
+        updates=updates if full else None,
+        warnings=warnings if full else None,
     )
+
+
+def optional(ctx, path, mapper):
+    """A panel extra: its failure must not fail the status."""
+    try:
+        return mapper(api(ctx, "GET", path))
+    except AuthError:
+        raise
+    except HelperError:
+        return None
+
+
+VERSION_RE = re.compile(r"^[A-Za-z0-9._+-]{1,40}$")
+COMPONENTS = (("core", "Core"), ("web", "Web interface"), ("ftl", "FTL"))
+
+
+def map_updates(payload):
+    """Components whose installed and latest versions are both known and differ.
+
+    A Docker install is updated by pulling the image, so only the image
+    tag is compared there.
+    """
+    version = payload.get("version") if isinstance(payload, dict) else None
+    if not isinstance(version, dict):
+        return None
+
+    def known(value):
+        return value if isinstance(value, str) and VERSION_RE.match(value) else None
+
+    docker = version.get("docker")
+    if isinstance(docker, dict) and known(docker.get("local")) and known(docker.get("remote")):
+        pairs = [("Docker image", docker.get("local"), docker.get("remote"))]
+    else:
+        pairs = []
+        for key, name in COMPONENTS:
+            part = version.get(key)
+            if not isinstance(part, dict):
+                continue
+            local = part.get("local") if isinstance(part.get("local"), dict) else {}
+            remote = part.get("remote") if isinstance(part.get("remote"), dict) else {}
+            pairs.append((name, local.get("version"), remote.get("version")))
+    out = []
+    for name, local, remote in pairs:
+        if known(local) and known(remote) and local != remote:
+            out.append({"name": name, "local": local, "remote": remote})
+    return out
+
+
+def map_warning_count(payload):
+    count = payload.get("count") if isinstance(payload, dict) else None
+    if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+        return None
+    return min(count, 9999)
 
 
 IP_RE = re.compile(r"^[0-9A-Fa-f:.]{2,45}$")

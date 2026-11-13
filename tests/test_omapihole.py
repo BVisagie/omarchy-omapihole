@@ -31,6 +31,14 @@ def fixture(name):
     return json.loads((FIXTURES / name).read_text(encoding="utf-8"))
 
 
+def panel_extras():
+    """The version and warning calls that end every full status."""
+    return [
+        {"status": 200, "json": fixture("info_version.json"), "expect": {"path": "/api/info/version"}},
+        {"status": 200, "json": fixture("info_messages_count.json"), "expect": {"path": "/api/info/messages/count"}},
+    ]
+
+
 class FakeHttp:
     def __init__(self, script):
         self.script = list(script)
@@ -186,6 +194,7 @@ class HelperTests(unittest.TestCase):
                 {"status": 200, "json": fixture("history.json")},
                 {"status": 200, "json": fixture("info_client.json"), "expect": {"path": "/api/info/client"}},
                 {"status": 200, "json": fixture("queries_blocked.json")},
+                *panel_extras(),
             ]
         )
         result = self.run_cmd("status", http=http)
@@ -195,7 +204,7 @@ class HelperTests(unittest.TestCase):
         self.assertEqual(result["recent_blocked"], ["metrics.example.net", "ads.example.org"])
         self.assertEqual(result["recent_scope"], "here")
         self.assertTrue(
-            http.calls[-1]["url"].endswith("/api/queries?upstream=blocklist&length=50&client_ip=192.168.1.50")
+            http.calls[-3]["url"].endswith("/api/queries?upstream=blocklist&length=50&client_ip=192.168.1.50")
         )
 
     def test_blocks_fall_back_to_the_network_when_none_are_from_here(self):
@@ -209,6 +218,7 @@ class HelperTests(unittest.TestCase):
                 {"status": 200, "json": {"remote_addr": "172.17.0.1"}},
                 {"status": 200, "json": {"queries": []}},
                 {"status": 200, "json": fixture("recent_blocked.json"), "expect": {"path": "/api/stats/recent_blocked?count=10"}},
+                *panel_extras(),
             ]
         )
         result = self.run_cmd("status", http=http)
@@ -224,6 +234,7 @@ class HelperTests(unittest.TestCase):
                 {"status": 200, "json": fixture("history.json")},
                 {"status": 200, "json": {"remote_addr": "1.2.3.4&length=99999"}},
                 {"status": 200, "json": fixture("recent_blocked.json")},
+                *panel_extras(),
             ]
         )
         result = self.run_cmd("status", http=http)
@@ -493,6 +504,7 @@ class HelperTests(unittest.TestCase):
             {"status": 200, "json": fixture("history.json")},
             {"status": 200, "json": fixture("info_client.json")},
             {"status": 200, "json": fixture("queries_blocked.json")},
+            *panel_extras(),
         ]
 
     def test_allow_adds_exact_domain_and_returns_full_status(self):
@@ -649,6 +661,7 @@ class HelperTests(unittest.TestCase):
                         ]
                     },
                 },
+                *panel_extras(),
             ]
         )
         result = self.run_cmd("status", http=http)
@@ -695,6 +708,60 @@ class HelperTests(unittest.TestCase):
         self.assertEqual(cmd[cmd.index("--proto") + 1], "=http,https")
         self.assertEqual(cmd[cmd.index("--max-filesize") + 1], str(self.mod.MAX_RESPONSE_BYTES))
         self.assertEqual((status, err), (None, "response too large"))
+
+    def test_full_status_reports_updates_and_warnings(self):
+        http = FakeHttp(
+            [
+                {"status": 200, "json": fixture("auth_valid_passwordless.json")},
+                {"status": 200, "json": fixture("summary.json")},
+                {"status": 200, "json": fixture("blocking_enabled.json")},
+                {"status": 200, "json": fixture("history.json")},
+                {"status": 200, "json": fixture("info_client.json")},
+                {"status": 200, "json": fixture("queries_blocked.json")},
+                *panel_extras(),
+            ]
+        )
+        result = self.run_cmd("status", http=http)
+        self.assertEqual(
+            result["updates"],
+            [
+                {"name": "Core", "local": "v6.5", "remote": "v6.6"},
+                {"name": "FTL", "local": "v6.8", "remote": "v6.9"},
+            ],
+        )
+        self.assertEqual(result["warnings"], 2)
+
+    def test_docker_installs_compare_the_image_only(self):
+        self.assertEqual(
+            self.mod.map_updates(fixture("info_version_docker.json")),
+            [{"name": "Docker image", "local": "2026.10.0", "remote": "2026.11.0"}],
+        )
+
+    def test_unknown_or_odd_versions_are_not_an_update(self):
+        payload = fixture("info_version.json")
+        payload["version"]["core"]["remote"]["version"] = None
+        payload["version"]["ftl"]["remote"]["version"] = "<b>v9</b>"
+        self.assertEqual(self.mod.map_updates(payload), [])
+        self.assertIsNone(self.mod.map_warning_count({"count": "3"}))
+        self.assertIsNone(self.mod.map_warning_count({"count": True}))
+
+    def test_panel_extras_failing_do_not_fail_the_status(self):
+        http = FakeHttp(
+            [
+                {"status": 200, "json": fixture("auth_valid_passwordless.json")},
+                {"status": 200, "json": fixture("summary.json")},
+                {"status": 200, "json": fixture("blocking_enabled.json")},
+                {"status": 200, "json": fixture("history.json")},
+                {"status": 200, "json": fixture("info_client.json")},
+                {"status": 200, "json": fixture("queries_blocked.json")},
+                {"status": 404, "json": {"error": {"message": "not found"}}},
+                {"status": 500, "json": {}},
+            ]
+        )
+        result = self.run_cmd("status", http=http)
+        self.assertTrue(result["ok"])
+        self.assertIsNone(result["updates"])
+        self.assertIsNone(result["warnings"])
 
     def test_usage_error_nonzero(self):
         buf = io.StringIO()

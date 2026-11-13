@@ -24,6 +24,13 @@ function say(loc, key, english) {
     return loc && typeof loc.tr === "function" ? loc.tr(key, english) : english
 }
 
+// A string that counts: loc.tn picks the language's plural form; English
+// has one and other.
+function sayN(loc, key, count, one, other) {
+    var english = Number(count) === 1 ? one : other
+    return loc && typeof loc.tn === "function" ? loc.tn(key, count, english) : english
+}
+
 function num(loc, value, places) {
     if (loc && typeof loc.num === "function") return loc.num(value, places)
     var n = Number(value)
@@ -152,11 +159,11 @@ function hostLabel(url) {
     return host || s
 }
 
-function dashboardUrl(settings) {
+function dashboardUrl(settings, page) {
     var cfg = coerceSettings(settings)
-    if (cfg.dashboardUrl) return cfg.dashboardUrl
-    if (!cfg.url) return ""
-    return cfg.url + "/admin/"
+    var base = cfg.dashboardUrl || (cfg.url ? cfg.url + "/admin/" : "")
+    if (!base || !page) return base
+    return base.replace(/\/*$/, "/") + page
 }
 
 function compactNumber(value, loc) {
@@ -365,6 +372,26 @@ function bucketHistory(history) {
     return bars
 }
 
+// "Pi-hole update available: Core v6.5 → v6.6", or "" when up to date or
+// unknown. The helper only reports pairs it could compare.
+function updateLine(snapshot, loc) {
+    var rows = snapshot && Array.isArray(snapshot.updates) ? snapshot.updates : []
+    var parts = []
+    for (var i = 0; i < rows.length && i < 4; i++) {
+        var r = rows[i] || {}
+        if (!r.name || !r.local || !r.remote) continue
+        parts.push(fill(say(loc, "update.part", "%1 %2 → %3"), r.name, r.local, r.remote))
+    }
+    if (parts.length === 0) return ""
+    return fill(say(loc, "update.available", "Pi-hole update available: %1"), parts.join(", "))
+}
+
+function warningsLine(snapshot, loc) {
+    var n = snapshot ? Number(snapshot.warnings) : 0
+    if (!isFinite(n) || n < 1) return ""
+    return fill(sayN(loc, "warnings.count", n, "%1 Pi-hole warning", "%1 Pi-hole warnings"), num(loc, n))
+}
+
 // Whose blocks the panel lists: this computer's when the Pi-hole had any.
 function blockedHeading(snapshot, loc) {
     return snapshot && snapshot.recent_scope === "here"
@@ -450,6 +477,10 @@ function applySuccessfulSnapshot(incoming, previous) {
     if (prior && prior.origin !== copy.origin) prior = null
     if (prior && (copy.history === null || copy.history === undefined)) {
         copy.history = prior.history === undefined ? null : prior.history
+        if (copy.updates === null || copy.updates === undefined)
+            copy.updates = prior.updates === undefined ? null : prior.updates
+        if (copy.warnings === null || copy.warnings === undefined)
+            copy.warnings = prior.warnings === undefined ? null : prior.warnings
         if (!copy.recent_blocked || copy.recent_blocked.length === 0) {
             copy.recent_blocked = prior.recent_blocked || []
             copy.recent_scope = prior.recent_scope === undefined ? null : prior.recent_scope
@@ -468,6 +499,8 @@ function withoutExtras(snapshot) {
     copy.history = null
     copy.recent_blocked = []
     copy.recent_scope = null
+    copy.updates = null
+    copy.warnings = null
     return copy
 }
 
@@ -611,6 +644,8 @@ if (typeof module !== "undefined") {
         bucketHistory: bucketHistory,
         recentBlocked: recentBlocked,
         blockedHeading: blockedHeading,
+        updateLine: updateLine,
+        warningsLine: warningsLine,
         unconfiguredSnapshot: unconfiguredSnapshot,
         parseHelperJson: parseHelperJson,
         mergeSnapshot: mergeSnapshot,
