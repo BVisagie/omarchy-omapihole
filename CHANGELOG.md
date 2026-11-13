@@ -11,6 +11,7 @@ All notable changes to OmaPihole. The format follows [Keep a Changelog](https://
 - The palette is read as `Commons.Color`, every string is drawn as plain text, and animations follow `omarchy toggle animations`, as Omarchy's plugin guide asks.
 - Settings are saved in one write that keeps the fields the setup form does not edit.
 - The plugin's strings are in `i18n/en.json` and follow Setup > Language; numbers use the language's separator and digits. English only so far.
+- The README explains that the API URL needs the port, what Dashboard URL and Allow insecure TLS do and don't do, and how to read Away from home, Offline, Failed and auth. Its screenshots are now real, taken against a demo Pi-hole.
 
 ### Added
 
@@ -22,6 +23,7 @@ All notable changes to OmaPihole. The format follows [Keep a Changelog](https://
 
 ### Fixed
 
+- The bar mark looked blurry and blocky on fractional display scales; it is now drawn with Qt's curve renderer and stays crisp.
 - After a URL change, or when **Test connection** checked a draft URL, the saved session ID was sent to the other host. Sessions are now tied to their host, and **Test connection** uses a throwaway session.
 - A valid saved session let **Test connection** pass with a wrong password file.
 - The same blocked domain could be listed more than once.

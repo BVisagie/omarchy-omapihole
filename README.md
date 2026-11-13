@@ -5,7 +5,7 @@
 # OmaPihole
 
 <p align="center">
-  <img src="preview.png" alt="OmaPihole in the Omarchy bar: the mark, block percent, and the pause panel">
+  <img src="preview.png" alt="The OmaPihole panel open below the Omarchy bar: 34% blocked in the last 24 hours, a sparkline, query stats, pause buttons, and the domains blocked on this computer">
 </p>
 
 Pi-hole presence in the Omarchy bar: **state, pause, glance.**
@@ -18,6 +18,11 @@ Not a dashboard. A shield in the bar, a pause in the panel.
 - Glance at the last 24 hours’ block rate, and notice when the Pi-hole has an update or warnings waiting.
 
 One Pi-hole. The app password lives in a mode-600 file, never in `shell.json`.
+
+<p align="center">
+  <img src="assets/paused.webp" width="49%" alt="Paused: the bar counts down 4:55 in the urgent color, and the panel says resumes in 4:55 with a Resume button">
+  <img src="assets/setup.webp" width="49%" alt="Settings: the API URL http://pi.hole:8080, the password file, optional dashboard URL and CA certificate file, and Test connection">
+</p>
 
 ## Requirements
 
