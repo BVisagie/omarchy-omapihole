@@ -20,7 +20,7 @@ import tempfile
 import time
 import urllib.parse
 
-USER_AGENT = "omapihole/0.2"
+USER_AGENT = "omapihole/0.3"
 CONNECT_TIMEOUT = "3"
 MAX_TIME = "8"
 MAX_SECRET_BYTES = 8192
