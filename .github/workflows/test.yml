@@ -11,23 +11,35 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7.0.1
-
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          python-version: "3.14"
+          persist-credentials: false
 
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.x"
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "lts/*"
 
-      - name: Manifest
-        run: python3 -c "import json; m=json.load(open('manifest.json')); assert m['id']=='bvisagie.omapihole' and m['schemaVersion']==1"
+      # `omarchy plugin add` and `update` refuse a plugin folder that holds one.
+      - name: No symlinks
+        run: |
+          links=$(git ls-files -s | awk '$1 == "120000" { print $4 }')
+          if [ -n "$links" ]; then
+            echo "::error::Omarchy refuses plugins with symlinks: $links"
+            exit 1
+          fi
+
+      # ruff.toml adds the extensionless helper to what ruff checks.
+      - name: Lint
+        uses: astral-sh/ruff-action@278981a28ce3188b1e39527901f38254bf3aac89 # v4.1.0
 
       - name: Helper tests
         run: python3 -m unittest discover -s tests -v
 
-      - name: Model and popup color tests
+      - name: Model, QML, catalog and manifest tests
         run: node --test tests/test_*.js
 
       - name: Helper compiles

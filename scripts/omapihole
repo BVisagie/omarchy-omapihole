@@ -117,7 +117,7 @@ def http_exchange(method, url, headers, body, insecure, ca_file=None):
             os.close(write_fd)
         cmd.extend(["-H", "@/dev/fd/%d" % read_fd, url])
         proc = subprocess.run(
-            cmd, capture_output=True, text=True, input=payload, pass_fds=(read_fd,)
+            cmd, capture_output=True, text=True, input=payload, pass_fds=(read_fd,), check=False
         )
     except FileNotFoundError:
         return None, "", "curl not found"
@@ -254,7 +254,7 @@ def parse_json_body(text):
     try:
         data = json.loads(raw)
     except ValueError:
-        raise FailedError("malformed JSON from Pi-hole")
+        raise FailedError("malformed JSON from Pi-hole") from None
     if data is None:
         return {}
     if not isinstance(data, dict):
@@ -880,7 +880,7 @@ def with_lock(env, fn):
         os.makedirs(directory, mode=0o700, exist_ok=True)
         fd = os.open(lock_path(env), os.O_CREAT | os.O_RDWR, 0o600)
     except OSError as exc:
-        raise FailedError("cannot write session state (%s)" % exc)
+        raise FailedError("cannot write session state (%s)" % exc) from exc
     try:
         fcntl.flock(fd, fcntl.LOCK_EX)
         return fn()
@@ -921,7 +921,7 @@ def dispatch(argv, env):
         try:
             seconds = int(rest[0])
         except ValueError:
-            raise SystemExit(usage("pause seconds must be an integer"))
+            raise SystemExit(usage("pause seconds must be an integer")) from None
         if seconds <= 0:
             raise SystemExit(usage("pause seconds must be > 0"))
         return do_pause(ctx, seconds)

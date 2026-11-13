@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Helper contract tests: fixtures, pause payload, 401 once, 429, totp, mode."""
 
 from __future__ import annotations
@@ -8,7 +7,6 @@ import importlib.util
 import io
 import json
 import os
-import stat
 import tempfile
 import unittest
 from pathlib import Path
@@ -582,9 +580,8 @@ class HelperTests(unittest.TestCase):
     def test_allow_refuses_non_domains(self):
         for bad in ("", "ads example.com", "-ads.example.com", "a/b", "x" * 254):
             buf = io.StringIO()
-            with mock.patch("sys.stderr", buf):
-                with self.assertRaises(SystemExit) as raised:
-                    self.mod.dispatch(["omapihole", "allow", bad], self.env)
+            with mock.patch("sys.stderr", buf), self.assertRaises(SystemExit) as raised:
+                self.mod.dispatch(["omapihole", "allow", bad], self.env)
             self.assertEqual(raised.exception.code, 2, bad)
 
     def test_sid_never_appears_on_curl_argv(self):
@@ -800,9 +797,8 @@ class HelperTests(unittest.TestCase):
 
     def test_usage_error_nonzero(self):
         buf = io.StringIO()
-        with mock.patch("sys.stderr", buf):
-            with self.assertRaises(SystemExit) as raised:
-                self.mod.dispatch(["omapihole", "pause"], self.env)
+        with mock.patch("sys.stderr", buf), self.assertRaises(SystemExit) as raised:
+            self.mod.dispatch(["omapihole", "pause"], self.env)
         self.assertEqual(raised.exception.code, 2)
 
 
