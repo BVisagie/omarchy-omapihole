@@ -40,14 +40,14 @@
         "key": "url",
         "type": "string",
         "label": "Pi-hole API URL",
-        "description": "API origin with no trailing path, e.g. http://pi.hole or https://192.168.1.2. Empty means unconfigured.",
+        "description": "API URL, with the port unless it is 80 for http or 443 for https, e.g. http://pi.hole:8080 or https://192.168.1.2. Empty means unconfigured.",
         "defaultValue": ""
       },
       {
         "key": "dashboardUrl",
         "type": "string",
         "label": "Dashboard URL",
-        "description": "Optional. Right-click and panel ↗ target. Empty uses the API origin plus /admin/.",
+        "description": "Optional. Where the dashboard opens, when the web interface is not at the API URL plus /admin/. Not used for API requests.",
         "defaultValue": ""
       },
       {
@@ -61,7 +61,7 @@
         "key": "allowInsecure",
         "type": "boolean",
         "label": "Allow insecure TLS",
-        "description": "Skip TLS certificate verification for self-signed LAN HTTPS. Default false.",
+        "description": "Skip certificate verification for https:// URLs. No effect on http://, and it cannot fix a wrong address or port. Prefer a CA certificate file.",
         "defaultValue": false
       },
       {

@@ -40,9 +40,22 @@ Without `--enable`, Omarchy clones the repo, validates the manifest, and leaves 
 1. On the Pi-hole: **Settings → Web interface / API → app password**.
 2. Pi-hole supports one application password. If another integration already uses it, reuse that password instead of needlessly rotating it.
 3. Write the password to `~/.config/omapihole/password` (outside `~/.config/omarchy/`, which is what people commit to dotfiles repos) and `chmod 600` that file. OmaPihole does not support an interactive TOTP prompt; use the Pi-hole application password when 2FA is enabled.
-4. Left-click the muted shield, fill in the API URL, and **Test connection** (or press Enter). A successful test saves; **Save** stores the settings without testing.
+4. Left-click the muted shield, fill in the API URL, and **Test connection** (or press Enter). A successful test saves; **Save** stores the settings without testing. If the test fails, its message names the cause, such as `Connection refused`.
 
-**Prefer HTTPS.** `http://` sends the password and session ID without encryption, so use it only on a trusted LAN. For a Pi-hole with its own certificate, point **CA certificate file** (`caFile`) at the PEM file that signed it rather than turning on **Allow insecure TLS**, which skips verification altogether.
+### The API URL needs the port
+
+The API URL is where OmaPihole sends every request, so it must include the port that serves Pi-hole's web interface and API, unless that is the default for the scheme (80 for `http`, 443 for `https`). Use the address your dashboard opens at, without `/admin/`:
+
+```text
+Dashboard: http://pi.hole:8080/admin/
+API URL:   http://pi.hole:8080
+```
+
+For Pi-hole in Docker, use the host's published port: with a `8080:80` mapping, that is `:8080`.
+
+**Dashboard URL** only sets where the dashboard opens (the ↗ button, `o`, and right-click unless it is set to pause). It is not used for API requests and does not supply a missing port; leave it empty when the dashboard is at the API URL plus `/admin/`.
+
+**Prefer HTTPS.** `http://` sends the password and session ID without encryption, so use it only on a trusted LAN. For a Pi-hole with its own certificate, point **CA certificate file** (`caFile`) at the PEM file that signed it. **Allow insecure TLS** only skips certificate verification for `https://`: it has no effect on `http://` and cannot fix a wrong address or port.
 
 To change settings later, open the panel and click the gear (or press `s`). Passwordless Pi-holes work with an empty or missing password file.
 
@@ -89,10 +102,10 @@ omarchy bar set bvisagie.omapihole refreshSeconds 30 --json
 
 | Key | Default | Meaning |
 |---|---|---|
-| `url` | `""` | API URL, e.g. `https://pi.hole`. A trailing `/admin` or `/api` is dropped; any other path is kept for a reverse proxy. Empty means unconfigured. |
-| `dashboardUrl` | `""` | Optional dashboard address when the web interface is not at `url` + `/admin/`. |
+| `url` | `""` | API URL, with the port unless it is 80 for `http` or 443 for `https`: e.g. `http://pi.hole:8080`. A trailing `/admin` or `/api` is dropped; any other path is kept for a reverse proxy. Empty means unconfigured. |
+| `dashboardUrl` | `""` | Where the dashboard opens, when the web interface is not at `url` + `/admin/`. Not used for API requests. |
 | `passwordFile` | `~/.config/omapihole/password` | App password file. Must be mode 600 if it exists. |
-| `allowInsecure` | `false` | Skip TLS verification. Prefer `caFile`. |
+| `allowInsecure` | `false` | Skip certificate verification for `https://`. No effect on `http://`. Prefer `caFile`. |
 | `caFile` | `""` | PEM file that signed the Pi-hole's HTTPS certificate, passed to curl as `--cacert`. Empty uses the system trust store. |
 | `refreshSeconds` | `20` | Bar poll interval, 10–120 seconds. `0` turns timed polling off; see [Network and privacy](#network-and-privacy). |
 | `barMetric` | `percent` | Bar label while blocking is on: `percent`, `rate` (queries per minute), or `queries` (24h total). Pause and off override it. |
@@ -130,7 +143,12 @@ Don't run `omarchy plugin update` for this plugin while you stay on 4.0: it woul
 
 ## Troubleshooting
 
-- **The bar shows `auth`.** The password file is missing, not mode 600, or holds the web password of a Pi-hole with 2FA. Use the app password.
+Start with the address, the port and the network; look at the password only when the Pi-hole rejects it. **Test connection** in settings names the cause.
+
+- **Away from home.** The API URL is a private IP address (`10.x`, `172.16–31.x`, `192.168.x`) and the Pi-hole did not answer: a timeout, a refused connection, or a TLS failure. It does not prove you are away. Check that the URL has the right port (see [The API URL needs the port](#the-api-url-needs-the-port)), that the Pi-hole is running, and that this computer can reach it, for example over a VPN.
+- **Offline.** The same, for a URL that uses a hostname such as `pi.hole`.
+- **Failed.** Something answered, but not as Pi-hole's API: often another web server on that port. Check the port.
+- **`auth` in the bar, Auth failed in the panel.** The Pi-hole rejected the login. The password file is missing, not mode 600, or holds the web password of a Pi-hole with 2FA. Use the app password; see [Setup](#setup).
 - **`Pi-hole is rate-limiting`.** Too many logins, or no free API sessions (`webserver.api.max_sessions`). OmaPihole backs off on its own; a manual refresh retries at once.
 - **TLS verification failed.** Set `caFile` to the certificate authority that signed the Pi-hole's certificate. Pi-hole renews its own self-signed certificate with a new CA, so after a renewal, export it again.
 - **The blocked list says “on the network”.** The Pi-hole sees this computer through a proxy or NAT, so it cannot tell this computer's queries apart.
