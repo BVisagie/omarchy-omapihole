@@ -21,7 +21,7 @@ One Pi-hole. The app password lives in a mode-600 file, never in `shell.json`.
 
 <p align="center">
   <img src="assets/paused.webp" width="49%" alt="Paused: the bar counts down 4:55 in the urgent color, and the panel says resumes in 4:55 with a Resume button">
-  <img src="assets/setup.webp" width="49%" alt="Settings: the API URL http://pi.hole:8080, the password file, optional dashboard URL and CA certificate file, and Test connection">
+  <img src="assets/settings.webp" width="49%" alt="Settings: the API URL http://pi.hole:8080, the password file, optional dashboard URL and CA certificate file, and Test connection">
 </p>
 
 ## Requirements
