@@ -86,7 +86,7 @@ omarchy bar set bvisagie.omapihole refreshSeconds 20 --json
 | `dashboardUrl` | `""` | Optional right-click / ↗ target when the UI is not on the API host. |
 | `passwordFile` | `~/.config/omapihole/password` | App password file. Mode 600 required if the file exists. |
 | `allowInsecure` | `false` | Skip TLS verification for self-signed LAN HTTPS. Prefer installing the Pi-hole CA instead. |
-| `refreshSeconds` | `20` | Bar poll interval, 10–120. |
+| `refreshSeconds` | `20` | Bar poll interval, 10–120 seconds. `0` turns timed polling off: the widget then asks only at start-up, when the panel opens, and when you refresh or act. |
 | `barMetric` | `percent` | Bar label while blocking is on: `percent`, `rate` (q/min), or `queries`. Overridden by pause/off. |
 
 ## Update

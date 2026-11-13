@@ -60,6 +60,9 @@ test("settings coercion: strings, range, metric", () => {
   assert.equal(c.passwordFile, "~/.config/omapihole/password");
   assert.equal(c.allowInsecure, true);
   assert.equal(c.refreshSeconds, 10);
+  assert.equal(Model.refreshSeconds(0), 0);
+  assert.equal(Model.refreshSeconds("0"), 0);
+  assert.equal(Model.refreshSeconds(0.5), 10);
   assert.equal(c.barMetric, "rate");
 
   const d = Model.coerceSettings({

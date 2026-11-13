@@ -385,8 +385,8 @@ BarWidget {
 
     Timer {
         id: pollTimer
-        interval: root.refreshSeconds * 1000
-        running: root.configured
+        interval: Math.max(1, root.refreshSeconds) * 1000
+        running: root.configured && root.refreshSeconds > 0
         repeat: true
         triggeredOnStart: true
         onTriggered: if (root.isPrimary() && root.timedPollAllowed()) root.enqueue({ type: "bar" })
@@ -395,7 +395,7 @@ BarWidget {
     Timer {
         id: fullTimer
         interval: 60000
-        running: root.opened && root.configured
+        running: root.opened && root.configured && root.refreshSeconds > 0
         repeat: true
         onTriggered: if (root.timedPollAllowed()) root.enqueue({ type: "full" })
     }

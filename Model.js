@@ -120,8 +120,10 @@ function passwordFile(value) {
     return s === "" ? DEFAULT_PASSWORD_FILE : s
 }
 
+// 0 turns timed polling off; anything else is held to 10-120 seconds.
 function refreshSeconds(value) {
     var n = parseNumber(value, DEFAULT_REFRESH)
+    if (n === 0) return 0
     return Math.round(clamp(n, REFRESH_MIN, REFRESH_MAX))
 }
 
