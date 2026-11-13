@@ -63,6 +63,7 @@ Panel {
     property string draftUrl: ""
     property string draftPasswordFile: ""
     property string draftDashboardUrl: ""
+    property string draftCaFile: ""
     property bool draftAllowInsecure: false
     property bool awaitingTest: false
     property bool settingsOpen: false
@@ -133,12 +134,14 @@ Panel {
         draftPasswordFile = String(setting("passwordFile", Model.DEFAULT_PASSWORD_FILE) || Model.DEFAULT_PASSWORD_FILE)
         draftDashboardUrl = String(setting("dashboardUrl", "") || "")
         draftAllowInsecure = Model.parseBool(setting("allowInsecure", false), false)
+        draftCaFile = String(setting("caFile", "") || "")
         testMessage = ""
         testOk = false
         awaitingTest = false
         if (urlField) urlField.text = draftUrl
         if (passwordField) passwordField.text = draftPasswordFile
         if (dashboardField) dashboardField.text = draftDashboardUrl
+        if (caField) caField.text = draftCaFile
     }
 
     function saveDrafts() {
@@ -147,7 +150,8 @@ Panel {
             url: draftUrl,
             passwordFile: draftPasswordFile,
             dashboardUrl: draftDashboardUrl,
-            allowInsecure: draftAllowInsecure
+            allowInsecure: draftAllowInsecure,
+            caFile: draftCaFile
         })
     }
 
@@ -164,7 +168,8 @@ Panel {
         hostWidget.pingWith({
             url: draftUrl,
             passwordFile: draftPasswordFile,
-            allowInsecure: draftAllowInsecure
+            allowInsecure: draftAllowInsecure,
+            caFile: draftCaFile
         })
     }
 
@@ -296,6 +301,7 @@ Panel {
             id: keyCatcher
             anchors.fill: parent
             blocked: urlField.activeFocus || passwordField.activeFocus || dashboardField.activeFocus
+                || caField.activeFocus
             onCloseRequested: {
                 if (root.settingsOpen) root.closeSettings()
                 else root.close()
@@ -524,7 +530,7 @@ Panel {
                             onAccepted: root.testConnection()
                             Keys.onEscapePressed: root.leaveField()
                             KeyNavigation.tab: passwordField
-                            KeyNavigation.backtab: dashboardField
+                            KeyNavigation.backtab: caField
                         }
 
                         PlainText {
@@ -563,14 +569,34 @@ Panel {
                             onTextChanged: root.draftDashboardUrl = text
                             onAccepted: root.testConnection()
                             Keys.onEscapePressed: root.leaveField()
-                            KeyNavigation.tab: urlField
+                            KeyNavigation.tab: caField
                             KeyNavigation.backtab: passwordField
+                        }
+
+                        PlainText {
+                            text: root.tr("setup.caFile", "CA certificate file (optional)")
+                            color: root.mutedFg
+                            font.family: root.fontFamily
+                            font.pixelSize: Style.font.caption
+                            font.bold: true
+                        }
+
+                        TextField {
+                            id: caField
+                            width: parent.width
+                            placeholderText: root.tr("setup.caFilePlaceholder", "PEM file that signed the Pi-hole's HTTPS certificate")
+                            foreground: root.popupFg
+                            onTextChanged: root.draftCaFile = text
+                            onAccepted: root.testConnection()
+                            Keys.onEscapePressed: root.leaveField()
+                            KeyNavigation.tab: urlField
+                            KeyNavigation.backtab: dashboardField
                         }
 
                         Toggle {
                             width: parent.width
                             label: root.tr("setup.insecure", "Allow insecure TLS")
-                            description: root.tr("setup.insecureHelp", "Skip certificate checks for self-signed LAN HTTPS.")
+                            description: root.tr("setup.insecureHelp", "Skip certificate checks for self-signed LAN HTTPS. A CA certificate file is the safer choice.")
                             checked: root.draftAllowInsecure
                             foreground: root.popupFg
                             onClicked: root.draftAllowInsecure = !root.draftAllowInsecure

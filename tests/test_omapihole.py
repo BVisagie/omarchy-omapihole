@@ -44,7 +44,7 @@ class FakeHttp:
         self.script = list(script)
         self.calls = []
 
-    def __call__(self, method, url, headers, body, insecure):
+    def __call__(self, method, url, headers, body, insecure, ca_file=None):
         self.calls.append(
             {
                 "method": method,
@@ -52,6 +52,7 @@ class FakeHttp:
                 "headers": dict(headers),
                 "body": body,
                 "insecure": insecure,
+                "ca_file": ca_file,
             }
         )
         if not self.script:
@@ -482,6 +483,40 @@ class HelperTests(unittest.TestCase):
         )
         self.run_cmd("status", "--bar", http=http)
         self.assertTrue(all(c["insecure"] for c in http.calls))
+
+    def test_ca_file_reaches_curl(self):
+        ca = Path(self.tmpdir.name) / "pihole-ca.crt"
+        ca.write_text("-----BEGIN CERTIFICATE-----\n", encoding="utf-8")
+        self.env["OMAPIHOLE_CA_FILE"] = str(ca)
+        http = FakeHttp(
+            [
+                {"status": 200, "json": fixture("auth_valid_passwordless.json")},
+                {"status": 200, "json": fixture("summary.json")},
+                {"status": 200, "json": fixture("blocking_enabled.json")},
+            ]
+        )
+        self.run_cmd("status", "--bar", http=http)
+        self.assertTrue(all(c["ca_file"] == str(ca) for c in http.calls))
+
+        seen = {}
+
+        def fake_run(cmd, **kwargs):
+            seen["cmd"] = list(cmd)
+            return mock.Mock(returncode=0, stdout="{}\n200", stderr="")
+
+        fresh = load_helper()  # run_cmd swapped this module's http_exchange
+        with mock.patch.object(fresh.subprocess, "run", side_effect=fake_run):
+            fresh.http_exchange("GET", "https://pi.hole/api/x", {}, None, False, str(ca))
+        self.assertEqual(seen["cmd"][seen["cmd"].index("--cacert") + 1], str(ca))
+        self.assertNotIn("-k", seen["cmd"])
+
+    def test_missing_ca_file_is_reported_before_a_request(self):
+        self.env["OMAPIHOLE_CA_FILE"] = str(Path(self.tmpdir.name) / "missing.crt")
+        http = FakeHttp([])
+        result = self.run_cmd("status", "--bar", http=http)
+        self.assertEqual(result["state"], "failed")
+        self.assertIn("no CA certificate file", result["error"])
+        self.assertEqual(http.calls, [])
 
     def allow_script(self, post_status, post_json):
         return [

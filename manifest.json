@@ -25,7 +25,9 @@
       "passwordFile": "~/.config/omapihole/password",
       "allowInsecure": false,
       "refreshSeconds": 20,
-      "barMetric": "percent"
+      "barMetric": "percent",
+      "caFile": "",
+      "rightClick": "dashboard"
     },
     "schema": [
       {
@@ -53,6 +55,13 @@
         "description": "Skip TLS certificate verification for self-signed LAN HTTPS. Default false."
       },
       {
+        "key": "caFile",
+        "type": "path",
+        "label": "CA certificate file",
+        "description": "Optional PEM file that signed the Pi-hole's HTTPS certificate, passed to curl as --cacert. The safe alternative to Allow insecure TLS. Empty uses the system trust store.",
+        "defaultValue": ""
+      },
+      {
         "key": "refreshSeconds",
         "type": "integer",
         "label": "Bar refresh (seconds)",
@@ -63,6 +72,17 @@
         "type": "string",
         "label": "Bar metric",
         "description": "What the bar shows while blocking is on: percent (default), rate (queries per minute), or queries (compact 24h total). Overridden by pause/off."
+      },
+      {
+        "key": "rightClick",
+        "type": "enum",
+        "label": "Right click",
+        "options": [
+          "dashboard",
+          "pause"
+        ],
+        "description": "What right-clicking the widget does: open the dashboard (default), or pause blocking for five minutes, and resume while it is paused or off.",
+        "defaultValue": "dashboard"
       }
     ]
   }

@@ -456,3 +456,13 @@ test("a bar poll keeps the panel's update and warning extras", () => {
   assert.equal(bar.warnings, 2);
   assert.equal(bar.updates.length, 1);
 });
+
+test("right click opens the dashboard unless set to pause", () => {
+  const on = { state: "enabled" };
+  assert.deepEqual(Model.rightClickAction(on, {}, 0), { type: "dashboard" });
+  assert.deepEqual(Model.rightClickAction(on, { rightClick: "pause" }, 0), { type: "pause", seconds: 300 });
+  assert.deepEqual(Model.rightClickAction({ state: "disabled" }, { rightClick: "pause" }, 0), { type: "resume" });
+  assert.deepEqual(Model.rightClickAction({ state: "offline" }, { rightClick: "pause" }, 0), { type: "dashboard" });
+  assert.equal(Model.coerceSettings({ rightClick: "bogus" }).rightClick, "dashboard");
+  assert.equal(Model.coerceSettings({ caFile: "  ~/ca.pem " }).caFile, "~/ca.pem");
+});

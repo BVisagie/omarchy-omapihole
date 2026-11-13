@@ -70,7 +70,7 @@ def rate_limited(payload):
 
 
 # Tests replace this. Production talks to curl.
-def http_exchange(method, url, headers, body, insecure):
+def http_exchange(method, url, headers, body, insecure, ca_file=None):
     """Return (status:int|None, text:str, error:str|None).
 
     status is None on a transport failure (timeout, TLS, refused).
@@ -93,6 +93,8 @@ def http_exchange(method, url, headers, body, insecure):
     ]
     if insecure:
         cmd.append("-k")
+    elif ca_file:
+        cmd.extend(["--cacert", ca_file])
     header_lines = ["%s: %s" % (key, value) for key, value in headers.items()]
     if body is not None:
         header_lines.append("Content-Type: application/json")
@@ -303,7 +305,7 @@ def request(ctx, method, path, body=None, sid=None):
     }
     if sid:
         headers["X-FTL-SID"] = sid
-    status, text, terr = http_exchange(method, url, headers, body, ctx["insecure"])
+    status, text, terr = http_exchange(method, url, headers, body, ctx["insecure"], ctx.get("ca_file"))
     if terr:
         raise OfflineError(terr)
     payload = parse_json_body(text) if text else {}
@@ -861,7 +863,9 @@ def do_allow(ctx, domain):
 def build_ctx(env):
     origin = normalize_origin(env.get("OMAPIHOLE_URL", ""))
     password_file = expand_path(env.get("OMAPIHOLE_PASSWORD_FILE") or DEFAULT_PASSWORD_FILE)
+    ca_raw = str(env.get("OMAPIHOLE_CA_FILE") or "").strip()
     return {
+        "ca_file": expand_path(ca_raw) if ca_raw else "",
         "origin": origin,
         "password_file": password_file,
         "insecure": parse_allow_insecure(env.get("OMAPIHOLE_ALLOW_INSECURE")),
@@ -897,6 +901,8 @@ def dispatch(argv, env):
     _, pw_err = read_password_file(ctx["password_file"])
     if pw_err:
         raise AuthError(pw_err)
+    if ctx["ca_file"] and not os.path.isfile(ctx["ca_file"]):
+        raise FailedError("no CA certificate file at %s" % ctx["ca_file"])
 
     if command == "status":
         full = True

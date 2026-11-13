@@ -47,7 +47,7 @@ Passwordless / local-trust Pi-holes work with an empty or missing password file.
 |---|---|
 | Left click | Open / close the panel |
 | Middle click | Refresh now |
-| Right click | Open the dashboard (`dashboardUrl`, or `url` + `/admin/`) |
+| Right click | Open the dashboard (`dashboardUrl`, or `url` + `/admin/`), or with `rightClick` set to `pause`, pause for 5 minutes / resume |
 | `1` `2` `3` `4` | Pause 30s / 5m / 15m / 1h |
 | `e` | Resume / enable while paused or off |
 | `r` | Refresh |
@@ -85,9 +85,11 @@ omarchy bar set bvisagie.omapihole refreshSeconds 20 --json
 | `url` | `""` | API origin, no trailing path. Empty → unconfigured. |
 | `dashboardUrl` | `""` | Optional right-click / ↗ target when the UI is not on the API host. |
 | `passwordFile` | `~/.config/omapihole/password` | App password file. Mode 600 required if the file exists. |
-| `allowInsecure` | `false` | Skip TLS verification for self-signed LAN HTTPS. Prefer installing the Pi-hole CA instead. |
+| `allowInsecure` | `false` | Skip TLS verification for self-signed LAN HTTPS. Prefer `caFile`. |
+| `caFile` | `""` | PEM file that signed the Pi-hole's HTTPS certificate, passed to curl as `--cacert`. Empty uses the system trust store. |
 | `refreshSeconds` | `20` | Bar poll interval, 10–120 seconds. `0` turns timed polling off: the widget then asks only at start-up, when the panel opens, and when you refresh or act. |
 | `barMetric` | `percent` | Bar label while blocking is on: `percent`, `rate` (q/min), or `queries`. Overridden by pause/off. |
+| `rightClick` | `dashboard` | `dashboard` opens the dashboard; `pause` pauses for 5 minutes while blocking is on and resumes while it is paused or off. |
 
 ## Update
 

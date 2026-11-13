@@ -13,6 +13,8 @@ var REFRESH_MIN = 10
 var REFRESH_MAX = 120
 var DEFAULT_REFRESH = 20
 var BAR_METRICS = ["percent", "rate", "queries"]
+var RIGHT_CLICKS = ["dashboard", "pause"]
+var QUICK_PAUSE_SECONDS = 300
 var PAUSE_SECONDS = [30, 300, 900, 3600]
 var ALLOW_CONFIRM_MS = 4000
 
@@ -139,6 +141,21 @@ function barMetric(value) {
     return BAR_METRICS.indexOf(s) >= 0 ? s : "percent"
 }
 
+function rightClick(value) {
+    var s = trim(value).toLowerCase()
+    return RIGHT_CLICKS.indexOf(s) >= 0 ? s : "dashboard"
+}
+
+// What a right click does: open the dashboard, or with rightClick "pause",
+// pause for five minutes while blocking is on and resume while it is not.
+function rightClickAction(snapshot, settings, nowSec) {
+    if (coerceSettings(settings).rightClick !== "pause") return { type: "dashboard" }
+    var s = displayState(snapshot, nowSec)
+    if (s === "enabled") return { type: "pause", seconds: QUICK_PAUSE_SECONDS }
+    if (s === "paused" || s === "disabled") return { type: "resume" }
+    return { type: "dashboard" }
+}
+
 function coerceSettings(raw) {
     var src = raw && typeof raw === "object" ? raw : {}
     return {
@@ -147,7 +164,9 @@ function coerceSettings(raw) {
         passwordFile: passwordFile(src.passwordFile),
         allowInsecure: parseBool(src.allowInsecure, false),
         refreshSeconds: refreshSeconds(src.refreshSeconds),
-        barMetric: barMetric(src.barMetric)
+        barMetric: barMetric(src.barMetric),
+        caFile: trim(src.caFile),
+        rightClick: rightClick(src.rightClick)
     }
 }
 
@@ -625,6 +644,7 @@ if (typeof module !== "undefined") {
         refreshSeconds: refreshSeconds,
         barMetric: barMetric,
         coerceSettings: coerceSettings,
+        rightClickAction: rightClickAction,
         hostLabel: hostLabel,
         dashboardUrl: dashboardUrl,
         compactNumber: compactNumber,

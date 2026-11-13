@@ -31,6 +31,7 @@ BarWidget {
     readonly property string apiOrigin: coerced.url
     readonly property string passwordFile: coerced.passwordFile
     readonly property bool allowInsecure: coerced.allowInsecure
+    readonly property string caFile: coerced.caFile
     readonly property int refreshSeconds: coerced.refreshSeconds
     readonly property string dashboardTarget: Model.dashboardUrl(root.settings)
     readonly property string hostName: Model.hostLabel(apiOrigin)
@@ -186,6 +187,13 @@ BarWidget {
         pingWith(null)
     }
 
+    function rightClicked() {
+        var action = Model.rightClickAction(root.snapshot, root.settings, Date.now() / 1000)
+        if (action.type === "pause") root.pause(action.seconds)
+        else if (action.type === "resume") root.resume()
+        else root.openDashboard()
+    }
+
     function openDashboard(page) {
         var url = page ? Model.dashboardUrl(root.settings, page) : dashboardTarget
         if (!url) return
@@ -205,6 +213,7 @@ BarWidget {
         if (fields.passwordFile !== undefined) entry.passwordFile = String(fields.passwordFile)
         if (fields.dashboardUrl !== undefined) entry.dashboardUrl = String(fields.dashboardUrl)
         if (fields.allowInsecure !== undefined) entry.allowInsecure = fields.allowInsecure === true
+        if (fields.caFile !== undefined) entry.caFile = Model.trim(fields.caFile)
         if (fields.refreshSeconds !== undefined) entry.refreshSeconds = Model.refreshSeconds(fields.refreshSeconds)
         root.bar.shell.updateEntryInline(root.moduleName, entry)
     }
@@ -214,10 +223,12 @@ BarWidget {
         var url = src.url !== undefined ? Model.apiOrigin(src.url) : apiOrigin
         var file = src.passwordFile !== undefined ? Model.passwordFile(src.passwordFile) : passwordFile
         var insecure = src.allowInsecure !== undefined ? Model.parseBool(src.allowInsecure, false) : allowInsecure
+        var ca = src.caFile !== undefined ? Model.trim(src.caFile) : caFile
         return {
             "OMAPIHOLE_URL": url,
             "OMAPIHOLE_PASSWORD_FILE": file,
-            "OMAPIHOLE_ALLOW_INSECURE": insecure ? "1" : "0"
+            "OMAPIHOLE_ALLOW_INSECURE": insecure ? "1" : "0",
+            "OMAPIHOLE_CA_FILE": ca
         }
     }
 
@@ -467,7 +478,7 @@ BarWidget {
         onPressed: function (b) {
             if (root.bar) root.bar.hideTooltip(button)
             if (!root.bar) return
-            if (b === Qt.RightButton) root.openDashboard()
+            if (b === Qt.RightButton) root.rightClicked()
             else if (b === Qt.MiddleButton) root.refresh()
             else root.togglePanel()
         }
