@@ -918,8 +918,9 @@ def dispatch(argv, env):
     _, pw_err = read_password_file(ctx["password_file"])
     if pw_err:
         raise AuthError(pw_err)
-    # curl ignores the CA file when verification is off, so only check it then.
-    if ctx["ca_file"] and not ctx["insecure"] and not os.path.isfile(ctx["ca_file"]):
+    # The CA file only matters for HTTPS with verification on.
+    if (ctx["ca_file"] and not ctx["insecure"] and ctx["origin"].lower().startswith("https://")
+            and not os.path.isfile(ctx["ca_file"])):
         raise FailedError("no CA certificate file at %s" % ctx["ca_file"])
 
     if command == "status":

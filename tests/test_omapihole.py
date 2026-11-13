@@ -509,6 +509,7 @@ class HelperTests(unittest.TestCase):
         self.assertNotIn("-k", seen["cmd"])
 
     def test_missing_ca_file_is_reported_before_a_request(self):
+        self.env["OMAPIHOLE_URL"] = "https://pi.hole"
         self.env["OMAPIHOLE_CA_FILE"] = str(Path(self.tmpdir.name) / "missing.crt")
         http = FakeHttp([])
         result = self.run_cmd("status", "--bar", http=http)
@@ -866,7 +867,19 @@ class HelperTests(unittest.TestCase):
         self.assertTrue(result["rate_limited"])
         self.assertEqual(len(http.calls), 2)
 
+    def test_a_missing_ca_file_is_ignored_for_http(self):
+        self.env["OMAPIHOLE_CA_FILE"] = str(Path(self.tmpdir.name) / "missing.crt")
+        http = FakeHttp(
+            [
+                {"status": 200, "json": fixture("auth_valid_passwordless.json")},
+                {"status": 200, "json": fixture("summary.json")},
+                {"status": 200, "json": fixture("blocking_enabled.json")},
+            ]
+        )
+        self.assertEqual(self.run_cmd("status", "--bar", http=http)["state"], "enabled")
+
     def test_a_missing_ca_file_is_ignored_when_verification_is_off(self):
+        self.env["OMAPIHOLE_URL"] = "https://pi.hole"
         self.env["OMAPIHOLE_CA_FILE"] = str(Path(self.tmpdir.name) / "missing.crt")
         self.env["OMAPIHOLE_ALLOW_INSECURE"] = "1"
         http = FakeHttp(

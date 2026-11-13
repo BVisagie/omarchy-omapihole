@@ -143,9 +143,9 @@ Don't run `omarchy plugin update` for this plugin while you stay on 4.0: it woul
 
 ## Troubleshooting
 
-Start with the address, the port and the network; turn to the password when the bar says `auth`. The panel, and **Test connection** in settings, show the reason.
+Start with the address, the port and the network; turn to the password when the bar says `auth`. **Test connection** in settings shows the reason, and so does the panel, except in Away from home.
 
-- **Away from home.** The API URL is a private IP address (`10.x`, `172.16–31.x`, `192.168.x`) and the Pi-hole did not answer: a timeout, a refused connection, or a TLS failure. It does not prove you are away. Check that the URL has the right port (see [The API URL needs the port](#the-api-url-needs-the-port)), that the Pi-hole is running, and that this computer can reach it, for example over a VPN.
+- **Away from home.** The API URL is a private IP address (`10.x`, `172.16–31.x`, `192.168.x`) and the Pi-hole did not answer: a timeout, a refused connection, or a TLS failure. It does not prove you are away. **Test connection** shows which of these it was. Check that the URL has the right port (see [The API URL needs the port](#the-api-url-needs-the-port)), that the Pi-hole is running, and that this computer can reach it, for example over a VPN.
 - **Offline.** The same, for a URL that uses a hostname such as `pi.hole`.
 - **Failed.** The request did not get a usable answer, or could not start; the panel shows the reason. A common cause is another web server on that port, so check the port first. Others are a missing `caFile`, a server error from the Pi-hole, or its blocking status reported as failed.
 - **`auth` in the bar, Auth failed in the panel.** The password could not be used: the password file is missing, unreadable or not mode 600, or the Pi-hole rejected it, for example the web password of a Pi-hole with 2FA. Use the app password; see [Setup](#setup).
