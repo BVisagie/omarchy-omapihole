@@ -39,11 +39,12 @@ Item {
         })
     }
 
+    // CurveRenderer draws anti-aliased curves at the screen's own scale. A
+    // multisampled layer is a texture at logical size, which a fractional
+    // scale (1.25, 1.5) stretches into a blurry, blocky mark.
     Shape {
         anchors.fill: parent
-        antialiasing: true
-        layer.enabled: true
-        layer.samples: 4
+        preferredRendererType: Shape.CurveRenderer
 
         ShapePath {
             fillColor: root.color

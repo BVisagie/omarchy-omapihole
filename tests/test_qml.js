@@ -41,3 +41,12 @@ test("animations go through Style.duration", () => {
     assert.doesNotMatch(source(name), /duration:\s*\d/, `${name} has a fixed animation duration`);
   }
 });
+
+test("vector shapes render with CurveRenderer, not a multisampled layer", () => {
+  for (const name of files) {
+    const code = source(name);
+    if (!/\bShape\s*\{/.test(code)) continue;
+    assert.match(code, /preferredRendererType:\s*Shape\.CurveRenderer/, `${name} Shape without CurveRenderer`);
+    assert.doesNotMatch(code, /layer\.(enabled|samples)/, `${name} renders a shape through a layer`);
+  }
+});
