@@ -1,0 +1,17 @@
+{
+  "version": {
+    "core": {
+      "local": { "version": "v6.5", "branch": "master", "hash": "0a1b2c3d" },
+      "remote": { "version": "v6.6", "hash": "4e5f6a7b" }
+    },
+    "web": {
+      "local": { "version": "v6.6.1", "branch": "master", "hash": "8c9d0e1f" },
+      "remote": { "version": "v6.6.1", "hash": "8c9d0e1f" }
+    },
+    "ftl": {
+      "local": { "hash": "1a2b3c4d", "branch": "master", "version": "v6.8", "date": "2026-10-17 11:00:00 +0000" },
+      "remote": { "version": "v6.9", "hash": "5e6f7a8b" }
+    }
+  },
+  "took": 0.00006
+}

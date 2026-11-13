@@ -60,6 +60,9 @@ test("settings coercion: strings, range, metric", () => {
   assert.equal(c.passwordFile, "~/.config/omapihole/password");
   assert.equal(c.allowInsecure, true);
   assert.equal(c.refreshSeconds, 10);
+  assert.equal(Model.refreshSeconds(0), 0);
+  assert.equal(Model.refreshSeconds("0"), 0);
+  assert.equal(Model.refreshSeconds(0.5), 10);
   assert.equal(c.barMetric, "rate");
 
   const d = Model.coerceSettings({
@@ -372,4 +375,106 @@ test("normalizeDomain accepts plain names only", () => {
   assert.equal(Model.normalizeDomain("_dmarc.example.com"), "_dmarc.example.com");
   for (const bad of ["", "ads example.com", "-a.example", "a/b", "*.example.com", "x".repeat(254), "a..b"])
     assert.equal(Model.normalizeDomain(bad), "", bad);
+});
+
+test("markup-shaped text stays literal on its way to every text sink", () => {
+  const markup = '<img src="https://example.invalid/tracker">';
+  const failed = { state: "failed", error: markup, fetched_at: 1 };
+  assert.equal(Model.tooltipText(failed, { url: "http://pi.hole" }, 2), markup);
+  assert.equal(Model.sentence(markup), markup);
+  const enabled = {
+    state: "enabled",
+    queries: { total: 1, blocked: 0, percent_blocked: 0 },
+    recent_blocked: [markup],
+    fetched_at: 1
+  };
+  assert.ok(Model.tooltipText(enabled, { url: "http://pi.hole" }, 2).includes("last " + markup));
+  assert.deepEqual(Model.recentBlocked(enabled), [markup]);
+  assert.equal(Model.normalizeDomain(markup), "");
+});
+
+test("rate-limit backoff steps 60, 120, then holds at 300", () => {
+  assert.equal(Model.nextBackoff(0), 60);
+  assert.equal(Model.nextBackoff(60), 120);
+  assert.equal(Model.nextBackoff(120), 300);
+  assert.equal(Model.nextBackoff(300), 300);
+});
+
+test("text and numbers go through loc when the QML passes one", () => {
+  const loc = {
+    tr: (key, english) => (key === "status.enabled" ? "Blokering til" : english),
+    num: (value, places) => (places === undefined ? String(value) : Number(value).toFixed(places)).replace(".", ",")
+  };
+  assert.equal(Model.headerStatus({ state: "enabled" }, 0, "", loc), "Blokering til");
+  assert.equal(Model.formatPercent(34.02, 1, loc), "34,0%");
+  assert.equal(Model.compactNumber(2104, loc), "2,1k");
+  assert.equal(Model.formatAge(300, loc), "5m ago");
+  assert.equal(Model.formatCountdown(65, loc), "1:05");
+});
+
+test("allow notices are worded from the helper's code", () => {
+  assert.equal(Model.allowNotice({ ok: true, code: "allowed", domain: "a.example" }), "Allowed a.example");
+  assert.equal(Model.allowNotice({ ok: true, code: "already", domain: "a.example" }), "a.example is already allowed");
+  assert.equal(
+    Model.allowNotice({ ok: false, code: "failed", domain: "a.example", message: "Invalid domain" }),
+    "Could not allow a.example: Invalid domain"
+  );
+});
+
+test("the blocked list says whose blocks it shows, and keeps that across bar polls", () => {
+  assert.equal(Model.blockedHeading({ recent_scope: "here" }), "blocked on this computer · click to copy");
+  assert.equal(Model.blockedHeading({ recent_scope: "network" }), "blocked on the network · click to copy");
+  const full = Model.applyHelperResult(null, {
+    ok: true, state: "enabled", history: [], recent_blocked: ["a.example"], recent_scope: "here", fetched_at: 1
+  }, "http://pi.hole", "http://pi.hole");
+  const bar = Model.applyHelperResult(full, {
+    ok: true, state: "enabled", history: null, recent_blocked: [], recent_scope: null, fetched_at: 2
+  }, "http://pi.hole", "http://pi.hole");
+  assert.equal(bar.recent_scope, "here");
+  assert.equal(Model.withoutExtras(bar).recent_scope, null);
+});
+
+test("update and warning lines appear only when there is something to say", () => {
+  assert.equal(Model.updateLine({ updates: [] }), "");
+  assert.equal(Model.updateLine({ updates: null }), "");
+  assert.equal(
+    Model.updateLine({ updates: [{ name: "Core", local: "v6.5", remote: "v6.6" }, { name: "FTL", local: "v6.8", remote: "v6.9" }] }),
+    "Pi-hole update available: Core v6.5 → v6.6, FTL v6.8 → v6.9"
+  );
+  assert.equal(Model.warningsLine({ warnings: 0 }), "");
+  assert.equal(Model.warningsLine({ warnings: 1 }), "1 Pi-hole warning");
+  assert.equal(Model.warningsLine({ warnings: 3 }), "3 Pi-hole warnings");
+  assert.equal(Model.dashboardUrl({ url: "http://pi.hole" }, "messages"), "http://pi.hole/admin/messages");
+  assert.equal(Model.dashboardUrl({ url: "http://pi.hole", dashboardUrl: "https://d.lan/admin" }, "messages"), "https://d.lan/admin/messages");
+});
+
+test("a bar poll keeps the panel's update and warning extras", () => {
+  const full = Model.applyHelperResult(null, {
+    ok: true, state: "enabled", history: [], recent_blocked: [], updates: [{ name: "Core", local: "a", remote: "b" }], warnings: 2, fetched_at: 1
+  }, "o", "o");
+  const bar = Model.applyHelperResult(full, { ok: true, state: "enabled", history: null, updates: null, warnings: null, fetched_at: 2 }, "o", "o");
+  assert.equal(bar.warnings, 2);
+  assert.equal(bar.updates.length, 1);
+});
+
+test("right click opens the dashboard unless set to pause", () => {
+  const on = { state: "enabled" };
+  assert.deepEqual(Model.rightClickAction(on, {}, 0), { type: "dashboard" });
+  assert.deepEqual(Model.rightClickAction(on, { rightClick: "pause" }, 0), { type: "pause", seconds: 300 });
+  assert.deepEqual(Model.rightClickAction({ state: "disabled" }, { rightClick: "pause" }, 0), { type: "resume" });
+  assert.deepEqual(Model.rightClickAction({ state: "offline" }, { rightClick: "pause" }, 0), { type: "dashboard" });
+  assert.equal(Model.coerceSettings({ rightClick: "bogus" }).rightClick, "dashboard");
+  assert.equal(Model.coerceSettings({ caFile: "  ~/ca.pem " }).caFile, "~/ca.pem");
+});
+
+test("merging a manual and a timed read keeps it manual", () => {
+  let q = Model.queueAction([], { type: "bar" });
+  q = Model.queueAction(q, { type: "full", timed: true });
+  assert.deepEqual(q, [{ type: "full" }]);
+  q = Model.queueAction([], { type: "full", timed: true });
+  q = Model.queueAction(q, { type: "bar" });
+  assert.deepEqual(q, [{ type: "full" }]);
+  q = Model.queueAction([], { type: "bar", timed: true });
+  q = Model.queueAction(q, { type: "full", timed: true });
+  assert.deepEqual(q, [{ type: "full", timed: true }]);
 });

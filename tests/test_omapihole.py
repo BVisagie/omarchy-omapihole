@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Helper contract tests: fixtures, pause payload, 401 once, 429, totp, mode."""
 
 from __future__ import annotations
@@ -8,7 +7,6 @@ import importlib.util
 import io
 import json
 import os
-import stat
 import tempfile
 import unittest
 from pathlib import Path
@@ -31,12 +29,20 @@ def fixture(name):
     return json.loads((FIXTURES / name).read_text(encoding="utf-8"))
 
 
+def panel_extras():
+    """The version and warning calls that end every full status."""
+    return [
+        {"status": 200, "json": fixture("info_version.json"), "expect": {"path": "/api/info/version"}},
+        {"status": 200, "json": fixture("info_messages_count.json"), "expect": {"path": "/api/info/messages/count"}},
+    ]
+
+
 class FakeHttp:
     def __init__(self, script):
         self.script = list(script)
         self.calls = []
 
-    def __call__(self, method, url, headers, body, insecure):
+    def __call__(self, method, url, headers, body, insecure, ca_file=None):
         self.calls.append(
             {
                 "method": method,
@@ -44,6 +50,7 @@ class FakeHttp:
                 "headers": dict(headers),
                 "body": body,
                 "insecure": insecure,
+                "ca_file": ca_file,
             }
         )
         if not self.script:
@@ -105,6 +112,18 @@ class HelperTests(unittest.TestCase):
     def write_password(self, text="secret", mode=0o600):
         self.password_path.write_text(text + "\n", encoding="utf-8")
         os.chmod(self.password_path, mode)
+
+    @property
+    def session_path(self):
+        return self.state / "omapihole" / "session"
+
+    def write_session(self, origin, sid):
+        self.session_path.parent.mkdir(parents=True, exist_ok=True)
+        self.session_path.write_text(json.dumps({"origin": origin, "sid": sid}) + "\n", encoding="utf-8")
+        os.chmod(self.session_path, 0o600)
+
+    def read_session(self):
+        return json.loads(self.session_path.read_text(encoding="utf-8"))
 
     def run_cmd(self, *argv, http=None):
         if http is not None:
@@ -172,14 +191,65 @@ class HelperTests(unittest.TestCase):
                 {"status": 200, "json": fixture("summary.json")},
                 {"status": 200, "json": fixture("blocking_enabled.json")},
                 {"status": 200, "json": fixture("history.json")},
-                {"status": 200, "json": fixture("recent_blocked.json")},
+                {"status": 200, "json": fixture("info_client.json"), "expect": {"path": "/api/info/client"}},
+                {"status": 200, "json": fixture("queries_blocked.json")},
+                *panel_extras(),
             ]
         )
         result = self.run_cmd("status", http=http)
         self.assertEqual(result["state"], "enabled")
         self.assertEqual(len(result["history"]), 6)
         self.assertEqual(result["history"][0]["t"], 1770000000)
+        self.assertEqual(result["recent_blocked"], ["metrics.example.net", "ads.example.org"])
+        self.assertEqual(result["recent_scope"], "here")
+        self.assertTrue(
+            http.calls[-3]["url"].endswith("/api/queries?upstream=blocklist&length=50&client_ip=192.168.1.50")
+        )
+
+    def test_blocks_fall_back_to_the_network_when_none_are_from_here(self):
+        # Behind a proxy the Pi-hole sees the proxy, which sends few queries.
+        http = FakeHttp(
+            [
+                {"status": 200, "json": fixture("auth_valid_passwordless.json")},
+                {"status": 200, "json": fixture("summary.json")},
+                {"status": 200, "json": fixture("blocking_enabled.json")},
+                {"status": 200, "json": fixture("history.json")},
+                {"status": 200, "json": {"remote_addr": "172.17.0.1"}},
+                {"status": 200, "json": {"queries": []}},
+                {"status": 200, "json": fixture("recent_blocked.json"), "expect": {"path": "/api/stats/recent_blocked?count=10"}},
+                *panel_extras(),
+            ]
+        )
+        result = self.run_cmd("status", http=http)
         self.assertEqual(result["recent_blocked"][0], "tracker.example.com")
+        self.assertEqual(result["recent_scope"], "network")
+
+    def test_an_odd_client_address_is_never_put_in_a_url(self):
+        http = FakeHttp(
+            [
+                {"status": 200, "json": fixture("auth_valid_passwordless.json")},
+                {"status": 200, "json": fixture("summary.json")},
+                {"status": 200, "json": fixture("blocking_enabled.json")},
+                {"status": 200, "json": fixture("history.json")},
+                {"status": 200, "json": {"remote_addr": "1.2.3.4&length=99999"}},
+                {"status": 200, "json": fixture("recent_blocked.json")},
+                *panel_extras(),
+            ]
+        )
+        result = self.run_cmd("status", http=http)
+        self.assertEqual(result["recent_scope"], "network")
+        self.assertFalse(any("/api/queries" in c["url"] for c in http.calls))
+
+    def test_bar_poll_skips_the_blocked_lists(self):
+        http = FakeHttp(
+            [
+                {"status": 200, "json": fixture("auth_valid_passwordless.json")},
+                {"status": 200, "json": fixture("summary.json")},
+                {"status": 200, "json": fixture("blocking_enabled.json")},
+            ]
+        )
+        result = self.run_cmd("status", "--bar", http=http)
+        self.assertIsNone(result["recent_scope"])
 
     def test_ping_fails_when_blocking_endpoint_is_unavailable(self):
         http = FakeHttp(
@@ -244,10 +314,7 @@ class HelperTests(unittest.TestCase):
 
     def test_401_reauth_once_then_retry(self):
         self.write_password()
-        sid_path = self.state / "omapihole" / "session"
-        sid_path.parent.mkdir(parents=True, exist_ok=True)
-        sid_path.write_text("stale-sid\n", encoding="utf-8")
-        os.chmod(sid_path, 0o600)
+        self.write_session("http://pi.hole", "stale-sid")
         http = FakeHttp(
             [
                 {"status": 401, "json": fixture("auth_401_stale_sid.json")},
@@ -271,9 +338,7 @@ class HelperTests(unittest.TestCase):
 
     def test_401_retry_exhausted_is_auth(self):
         self.write_password()
-        sid_path = self.state / "omapihole" / "session"
-        sid_path.parent.mkdir(parents=True, exist_ok=True)
-        sid_path.write_text("stale-sid\n", encoding="utf-8")
+        self.write_session("http://pi.hole", "stale-sid")
         http = FakeHttp(
             [
                 {"status": 401, "json": fixture("auth_401_stale_sid.json")},
@@ -288,9 +353,7 @@ class HelperTests(unittest.TestCase):
 
     def test_429_seats_no_reauth(self):
         self.write_password()
-        sid_path = self.state / "omapihole" / "session"
-        sid_path.parent.mkdir(parents=True, exist_ok=True)
-        sid_path.write_text("live-sid\n", encoding="utf-8")
+        self.write_session("http://pi.hole", "live-sid")
         http = FakeHttp(
             [
                 {"status": 429, "json": fixture("auth_429_seats.json")},
@@ -304,6 +367,7 @@ class HelperTests(unittest.TestCase):
         )
         self.assertEqual(len(http.calls), 1)
         self.assertFalse(any(c["method"] == "POST" for c in http.calls))
+        self.assertTrue(result["rate_limited"])
 
     def test_429_rate_limit_on_login(self):
         self.write_password()
@@ -418,6 +482,41 @@ class HelperTests(unittest.TestCase):
         self.run_cmd("status", "--bar", http=http)
         self.assertTrue(all(c["insecure"] for c in http.calls))
 
+    def test_ca_file_reaches_curl(self):
+        ca = Path(self.tmpdir.name) / "pihole-ca.crt"
+        ca.write_text("-----BEGIN CERTIFICATE-----\n", encoding="utf-8")
+        self.env["OMAPIHOLE_CA_FILE"] = str(ca)
+        http = FakeHttp(
+            [
+                {"status": 200, "json": fixture("auth_valid_passwordless.json")},
+                {"status": 200, "json": fixture("summary.json")},
+                {"status": 200, "json": fixture("blocking_enabled.json")},
+            ]
+        )
+        self.run_cmd("status", "--bar", http=http)
+        self.assertTrue(all(c["ca_file"] == str(ca) for c in http.calls))
+
+        seen = {}
+
+        def fake_run(cmd, **kwargs):
+            seen["cmd"] = list(cmd)
+            return mock.Mock(returncode=0, stdout="{}\n200", stderr="")
+
+        fresh = load_helper()  # run_cmd swapped this module's http_exchange
+        with mock.patch.object(fresh.subprocess, "run", side_effect=fake_run):
+            fresh.http_exchange("GET", "https://pi.hole/api/x", {}, None, False, str(ca))
+        self.assertEqual(seen["cmd"][seen["cmd"].index("--cacert") + 1], str(ca))
+        self.assertNotIn("-k", seen["cmd"])
+
+    def test_missing_ca_file_is_reported_before_a_request(self):
+        self.env["OMAPIHOLE_URL"] = "https://pi.hole"
+        self.env["OMAPIHOLE_CA_FILE"] = str(Path(self.tmpdir.name) / "missing.crt")
+        http = FakeHttp([])
+        result = self.run_cmd("status", "--bar", http=http)
+        self.assertEqual(result["state"], "failed")
+        self.assertIn("no CA certificate file", result["error"])
+        self.assertEqual(http.calls, [])
+
     def allow_script(self, post_status, post_json):
         return [
             {"status": 200, "json": fixture("auth_valid_passwordless.json")},
@@ -437,7 +536,9 @@ class HelperTests(unittest.TestCase):
             {"status": 200, "json": fixture("summary.json")},
             {"status": 200, "json": fixture("blocking_enabled.json")},
             {"status": 200, "json": fixture("history.json")},
-            {"status": 200, "json": fixture("recent_blocked.json")},
+            {"status": 200, "json": fixture("info_client.json")},
+            {"status": 200, "json": fixture("queries_blocked.json")},
+            *panel_extras(),
         ]
 
     def test_allow_adds_exact_domain_and_returns_full_status(self):
@@ -445,7 +546,10 @@ class HelperTests(unittest.TestCase):
         http = FakeHttp(self.allow_script(201, created))
         result = self.run_cmd("allow", "Ads.Example.com.", http=http)
         self.assertEqual(result["state"], "enabled")
-        self.assertEqual(result["action"], {"ok": True, "message": "allowed ads.example.com"})
+        self.assertEqual(
+            result["action"],
+            {"ok": True, "code": "allowed", "domain": "ads.example.com", "message": None},
+        )
         self.assertEqual(len(result["history"]), 6)
 
     def test_allow_duplicate_is_reported_not_failed(self):
@@ -463,21 +567,22 @@ class HelperTests(unittest.TestCase):
         http = FakeHttp(self.allow_script(201, dup))
         result = self.run_cmd("allow", "ads.example.com", http=http)
         self.assertEqual(result["state"], "enabled")
-        self.assertEqual(result["action"]["message"], "ads.example.com is already allowed")
+        self.assertEqual(result["action"]["code"], "already")
+        self.assertTrue(result["action"]["ok"])
 
     def test_allow_rejection_keeps_state(self):
         http = FakeHttp(self.allow_script(400, {"error": {"message": "Invalid domain"}}))
         result = self.run_cmd("allow", "ads.example.com", http=http)
         self.assertEqual(result["state"], "enabled")
         self.assertFalse(result["action"]["ok"])
+        self.assertEqual(result["action"]["code"], "failed")
         self.assertEqual(result["action"]["message"], "Invalid domain")
 
     def test_allow_refuses_non_domains(self):
         for bad in ("", "ads example.com", "-ads.example.com", "a/b", "x" * 254):
             buf = io.StringIO()
-            with mock.patch("sys.stderr", buf):
-                with self.assertRaises(SystemExit) as raised:
-                    self.mod.dispatch(["omapihole", "allow", bad], self.env)
+            with mock.patch("sys.stderr", buf), self.assertRaises(SystemExit) as raised:
+                self.mod.dispatch(["omapihole", "allow", bad], self.env)
             self.assertEqual(raised.exception.code, 2, bad)
 
     def test_sid_never_appears_on_curl_argv(self):
@@ -500,11 +605,297 @@ class HelperTests(unittest.TestCase):
         self.assertNotIn("secret-sid", " ".join(seen["cmd"]))
         self.assertIn("X-FTL-SID: secret-sid", seen["headers"])
 
+    def test_session_for_another_host_is_logged_out_there_not_sent_here(self):
+        self.write_session("http://old.lan", "old-sid")
+        http = FakeHttp(
+            [
+                {"status": 200, "json": {}, "expect": {"method": "DELETE", "path": "/api/auth"}},
+                {"status": 200, "json": fixture("auth_valid_passwordless.json"), "expect": {"has_sid": False}},
+                {"status": 200, "json": fixture("summary.json")},
+                {"status": 200, "json": fixture("blocking_enabled.json")},
+            ]
+        )
+        result = self.run_cmd("status", "--bar", http=http)
+        self.assertEqual(result["state"], "enabled")
+        self.assertEqual(http.calls[0]["url"], "http://old.lan/api/auth")
+        self.assertEqual(http.calls[0]["headers"].get("X-FTL-SID"), "old-sid")
+        for call in http.calls[1:]:
+            self.assertTrue(call["url"].startswith("http://pi.hole/"), call["url"])
+            self.assertNotEqual(call["headers"].get("X-FTL-SID"), "old-sid")
+        self.assertFalse(self.session_path.exists())
+
+    def test_session_without_origin_is_never_sent(self):
+        self.session_path.parent.mkdir(parents=True, exist_ok=True)
+        self.session_path.write_text("legacy-sid\n", encoding="utf-8")
+        os.chmod(self.session_path, 0o600)
+        self.write_password()
+        http = FakeHttp(
+            [
+                {"status": 401, "json": fixture("auth_required.json"), "expect": {"has_sid": False}},
+                {"status": 200, "json": fixture("auth_login_ok.json")},
+                {"status": 200, "json": fixture("summary.json")},
+                {"status": 200, "json": fixture("blocking_enabled.json")},
+            ]
+        )
+        result = self.run_cmd("status", "--bar", http=http)
+        self.assertEqual(result["state"], "enabled")
+        self.assertTrue(all(c["headers"].get("X-FTL-SID") != "legacy-sid" for c in http.calls))
+        self.assertEqual(self.read_session(), {"origin": "http://pi.hole", "sid": "vFA+EP4MQ5JJvJg+3Q2Jnw="})
+
+    def ping_script(self):
+        return [
+            {"status": 401, "json": fixture("auth_required.json"), "expect": {"method": "GET", "has_sid": False}},
+            {"status": 200, "json": fixture("auth_login_ok.json"), "expect": {"method": "POST"}},
+            {"status": 200, "json": fixture("summary.json")},
+            {"status": 200, "json": fixture("blocking_enabled.json")},
+            {"status": 204, "json": None, "expect": {"method": "DELETE", "path": "/api/auth"}},
+        ]
+
+    def test_ping_logs_in_on_a_throwaway_session(self):
+        # A valid stored session must not let a wrong password file pass.
+        self.write_password()
+        self.write_session("http://pi.hole", "live-sid")
+        http = FakeHttp(self.ping_script())
+        result = self.run_cmd("ping", http=http)
+        self.assertTrue(result["ok"])
+        self.assertTrue(all(c["headers"].get("X-FTL-SID") != "live-sid" for c in http.calls))
+        self.assertEqual(http.calls[-1]["headers"].get("X-FTL-SID"), "vFA+EP4MQ5JJvJg+3Q2Jnw=")
+        self.assertEqual(self.read_session(), {"origin": "http://pi.hole", "sid": "live-sid"})
+
+    def test_ping_to_a_draft_host_leaves_the_stored_session_alone(self):
+        self.write_password()
+        self.write_session("http://pi.hole", "live-sid")
+        self.env["OMAPIHOLE_URL"] = "http://typo.example"
+        http = FakeHttp(self.ping_script())
+        result = self.run_cmd("ping", http=http)
+        self.assertTrue(result["ok"])
+        self.assertTrue(all(c["url"].startswith("http://typo.example/") for c in http.calls))
+        self.assertTrue(all(c["headers"].get("X-FTL-SID") != "live-sid" for c in http.calls))
+        self.assertEqual(self.read_session(), {"origin": "http://pi.hole", "sid": "live-sid"})
+
+    def test_blocked_list_keeps_plain_domains_only(self):
+        http = FakeHttp(
+            [
+                {"status": 200, "json": fixture("auth_valid_passwordless.json")},
+                {"status": 200, "json": fixture("summary.json")},
+                {"status": 200, "json": fixture("blocking_enabled.json")},
+                {"status": 200, "json": fixture("history.json")},
+                {"status": 200, "json": fixture("info_client.json")},
+                {"status": 200, "json": {"queries": [{"domain": "<b>x</b>"}, {"domain": 7}]}},
+                {
+                    "status": 200,
+                    "json": {
+                        "blocked": [
+                            '<img src="https://example.invalid/tracker">',
+                            "Ads.Example.com.",
+                            "ads.example.com",
+                            "x" * 300,
+                            42,
+                        ]
+                    },
+                },
+                *panel_extras(),
+            ]
+        )
+        result = self.run_cmd("status", http=http)
+        self.assertEqual(result["recent_blocked"], ["ads.example.com"])
+
+    def test_error_text_from_pi_hole_is_bounded(self):
+        hint = "<b>bad</b>\n\x1b[31m" + "y" * 500
+        http = FakeHttp(
+            [
+                {"status": 200, "json": fixture("auth_valid_passwordless.json")},
+                {"status": 500, "json": {"error": {"message": hint}}},
+            ]
+        )
+        result = self.run_cmd("status", "--bar", http=http)
+        self.assertEqual(result["state"], "failed")
+        self.assertLessEqual(len(result["error"]), self.mod.MAX_TEXT_CHARS)
+        self.assertTrue(result["error"].startswith("<b>bad</b> [31m"))
+        self.assertNotIn("\n", result["error"])
+
+    def test_history_rows_are_capped(self):
+        rows = [{"t": 1770000000 + i, "total": 1, "blocked": 0} for i in range(1000)]
+        mapped = self.mod.map_history({"history": rows})
+        self.assertEqual(len(mapped), self.mod.MAX_HISTORY_ROWS)
+        self.assertEqual(mapped[-1]["t"], 1770000999)
+
+    def test_non_http_url_is_refused_without_a_request(self):
+        for url in ("file:///etc/passwd", "gopher://pi.hole", "pi.hole"):
+            self.env["OMAPIHOLE_URL"] = url
+            http = FakeHttp([])
+            result = self.run_cmd("status", "--bar", http=http)
+            self.assertEqual(result["state"], "failed", url)
+            self.assertEqual(http.calls, [])
+
+    def test_curl_is_limited_to_http_and_bounded_size(self):
+        seen = {}
+
+        def fake_run(cmd, **kwargs):
+            seen["cmd"] = list(cmd)
+            return mock.Mock(returncode=0, stdout="x" * (self.mod.MAX_RESPONSE_BYTES + 100) + "\n200", stderr="")
+
+        with mock.patch.object(self.mod.subprocess, "run", side_effect=fake_run):
+            status, _text, err = self.mod.http_exchange("GET", "http://pi.hole/api/x", {}, None, False)
+        cmd = seen["cmd"]
+        self.assertEqual(cmd[cmd.index("--proto") + 1], "=http,https")
+        self.assertEqual(cmd[cmd.index("--max-filesize") + 1], str(self.mod.MAX_RESPONSE_BYTES))
+        self.assertEqual((status, err), (None, "response too large"))
+
+    def test_full_status_reports_updates_and_warnings(self):
+        http = FakeHttp(
+            [
+                {"status": 200, "json": fixture("auth_valid_passwordless.json")},
+                {"status": 200, "json": fixture("summary.json")},
+                {"status": 200, "json": fixture("blocking_enabled.json")},
+                {"status": 200, "json": fixture("history.json")},
+                {"status": 200, "json": fixture("info_client.json")},
+                {"status": 200, "json": fixture("queries_blocked.json")},
+                *panel_extras(),
+            ]
+        )
+        result = self.run_cmd("status", http=http)
+        self.assertEqual(
+            result["updates"],
+            [
+                {"name": "Core", "local": "v6.5", "remote": "v6.6"},
+                {"name": "FTL", "local": "v6.8", "remote": "v6.9"},
+            ],
+        )
+        self.assertEqual(result["warnings"], 2)
+
+    def test_docker_installs_compare_the_image_only(self):
+        self.assertEqual(
+            self.mod.map_updates(fixture("info_version_docker.json")),
+            [{"name": "Docker image", "local": "2026.10.0", "remote": "2026.11.0"}],
+        )
+
+    def test_unknown_or_odd_versions_are_not_an_update(self):
+        payload = fixture("info_version.json")
+        payload["version"]["core"]["remote"]["version"] = None
+        payload["version"]["ftl"]["remote"]["version"] = "<b>v9</b>"
+        self.assertEqual(self.mod.map_updates(payload), [])
+        self.assertIsNone(self.mod.map_warning_count({"count": "3"}))
+        self.assertIsNone(self.mod.map_warning_count({"count": True}))
+
+    def test_panel_extras_failing_do_not_fail_the_status(self):
+        http = FakeHttp(
+            [
+                {"status": 200, "json": fixture("auth_valid_passwordless.json")},
+                {"status": 200, "json": fixture("summary.json")},
+                {"status": 200, "json": fixture("blocking_enabled.json")},
+                {"status": 200, "json": fixture("history.json")},
+                {"status": 200, "json": fixture("info_client.json")},
+                {"status": 200, "json": fixture("queries_blocked.json")},
+                {"status": 404, "json": {"error": {"message": "not found"}}},
+                {"status": 500, "json": {}},
+            ]
+        )
+        result = self.run_cmd("status", http=http)
+        self.assertTrue(result["ok"])
+        self.assertIsNone(result["updates"])
+        self.assertIsNone(result["warnings"])
+
+    def test_an_oversized_or_odd_sid_is_never_stored_or_sent(self):
+        self.write_password()
+        login = fixture("auth_login_ok.json")
+        login["session"]["sid"] = "x" * 100000
+        http = FakeHttp(
+            [
+                {"status": 401, "json": fixture("auth_required.json")},
+                {"status": 200, "json": login},
+                {"status": 401, "json": fixture("auth_401_stale_sid.json")},
+                {"status": 401, "json": fixture("auth_required.json")},
+                {"status": 200, "json": login},
+                {"status": 401, "json": fixture("auth_401_stale_sid.json")},
+            ]
+        )
+        result = self.run_cmd("status", "--bar", http=http)
+        self.assertEqual(result["state"], "auth")
+        self.assertTrue(all("X-FTL-SID" not in c["headers"] for c in http.calls))
+        self.assertFalse(self.session_path.exists())
+
+    def test_non_finite_numbers_fall_back_instead_of_crashing(self):
+        inf = float("inf")
+        self.assertEqual(
+            self.mod.map_history({"history": [{"t": inf, "total": 1}, {"t": 5, "total": inf, "blocked": float("nan")}]}),
+            [{"t": 5, "total": 0, "blocked": 0}],
+        )
+        self.assertEqual(self.mod.map_gravity({"gravity": {"domains_being_blocked": inf, "last_update": -3}}),
+                         {"domains_being_blocked": 0, "last_update": 0})
+        self.assertEqual(self.mod.map_queries({"queries": {"total": inf, "percent_blocked": "nan"}})["total"], 0)
+        self.assertEqual(self.mod.map_blocking({"blocking": "disabled", "timer": inf}), ("disabled", False, None))
+        self.assertEqual(self.mod.map_blocking({"blocking": "disabled", "timer": 30.7}), ("paused", False, 30))
+
+    def test_a_rate_limit_on_a_panel_extra_stops_the_status(self):
+        http = FakeHttp(
+            [
+                {"status": 200, "json": fixture("auth_valid_passwordless.json")},
+                {"status": 200, "json": fixture("summary.json")},
+                {"status": 200, "json": fixture("blocking_enabled.json")},
+                {"status": 429, "json": fixture("auth_429_rate_limit.json")},
+            ]
+        )
+        result = self.run_cmd("status", http=http)
+        self.assertEqual(result["state"], "failed")
+        self.assertTrue(result["rate_limited"])
+        self.assertEqual(len(http.calls), 4)
+
+    def test_huge_json_integers_fall_back(self):
+        big = 10**400
+        self.assertEqual(self.mod.whole(big), 0)
+        self.assertEqual(self.mod.map_queries({"queries": {"total": big}})["total"], 0)
+
+    def test_a_429_without_json_is_still_a_rate_limit(self):
+        self.mod.http_exchange = lambda *a, **k: (429, "<html>Too Many Requests</html>", None)
+        buf = io.StringIO()
+        with mock.patch("sys.stdout", buf):
+            self.mod.run(["omapihole", "status", "--bar"], self.env)
+        result = json.loads(buf.getvalue())
+        self.assertEqual(result["state"], "failed")
+        self.assertTrue(result["rate_limited"])
+
+    def test_allow_rate_limited_stops_instead_of_reporting_a_refusal(self):
+        http = FakeHttp(
+            [
+                {"status": 200, "json": fixture("auth_valid_passwordless.json")},
+                {"status": 429, "json": fixture("auth_429_rate_limit.json")},
+            ]
+        )
+        result = self.run_cmd("allow", "ads.example.com", http=http)
+        self.assertEqual(result["state"], "failed")
+        self.assertTrue(result["rate_limited"])
+        self.assertEqual(len(http.calls), 2)
+
+    def test_a_missing_ca_file_is_ignored_for_http(self):
+        self.env["OMAPIHOLE_CA_FILE"] = str(Path(self.tmpdir.name) / "missing.crt")
+        http = FakeHttp(
+            [
+                {"status": 200, "json": fixture("auth_valid_passwordless.json")},
+                {"status": 200, "json": fixture("summary.json")},
+                {"status": 200, "json": fixture("blocking_enabled.json")},
+            ]
+        )
+        self.assertEqual(self.run_cmd("status", "--bar", http=http)["state"], "enabled")
+
+    def test_a_missing_ca_file_is_ignored_when_verification_is_off(self):
+        self.env["OMAPIHOLE_URL"] = "https://pi.hole"
+        self.env["OMAPIHOLE_CA_FILE"] = str(Path(self.tmpdir.name) / "missing.crt")
+        self.env["OMAPIHOLE_ALLOW_INSECURE"] = "1"
+        http = FakeHttp(
+            [
+                {"status": 200, "json": fixture("auth_valid_passwordless.json")},
+                {"status": 200, "json": fixture("summary.json")},
+                {"status": 200, "json": fixture("blocking_enabled.json")},
+            ]
+        )
+        result = self.run_cmd("status", "--bar", http=http)
+        self.assertEqual(result["state"], "enabled")
+
     def test_usage_error_nonzero(self):
         buf = io.StringIO()
-        with mock.patch("sys.stderr", buf):
-            with self.assertRaises(SystemExit) as raised:
-                self.mod.dispatch(["omapihole", "pause"], self.env)
+        with mock.patch("sys.stderr", buf), self.assertRaises(SystemExit) as raised:
+            self.mod.dispatch(["omapihole", "pause"], self.env)
         self.assertEqual(raised.exception.code, 2)
 
 

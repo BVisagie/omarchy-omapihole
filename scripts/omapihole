@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import fcntl
 import json
+import math
 import os
 import re
 import stat
@@ -18,11 +19,19 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.parse
 
-USER_AGENT = "omapihole/0.2"
+USER_AGENT = "omapihole/0.3"
 CONNECT_TIMEOUT = "3"
 MAX_TIME = "8"
 MAX_SECRET_BYTES = 8192
+# Pi-hole answers are a few kB; anything far larger is not a Pi-hole.
+MAX_RESPONSE_BYTES = 1000000
+MAX_TEXT_CHARS = 200
+MAX_HISTORY_ROWS = 300
+MAX_DOMAINS = 10
+# FTL session IDs are short base64; anything else is not stored or sent.
+SID_RE = re.compile(r"^[A-Za-z0-9+/=_.-]{1,256}$")
 TWO_FA_MSG = "this Pi-hole has 2FA; use an app password, not the web password."
 DEFAULT_PASSWORD_FILE = "~/.config/omapihole/password"
 USAGE = "usage: omapihole status [--bar] | pause <seconds> | resume | allow <domain> | ping"
@@ -49,8 +58,8 @@ class OfflineError(HelperError):
 
 
 class FailedError(HelperError):
-    def __init__(self, error):
-        super().__init__("failed", error)
+    def __init__(self, error, extra=None):
+        super().__init__("failed", error, extra)
 
 
 def rate_limited(payload):
@@ -58,11 +67,13 @@ def rate_limited(payload):
     # editing credentials, so report it as a retryable failure rather than
     # "auth", which would put the panel back into setup.
     hint = error_hint(payload)
-    return FailedError("Pi-hole is rate-limiting: %s" % hint if hint else "Pi-hole is rate-limiting requests")
+    message = "Pi-hole is rate-limiting: %s" % hint if hint else "Pi-hole is rate-limiting requests"
+    # The widget backs off on this flag instead of polling into the limit.
+    return FailedError(message, {"rate_limited": True})
 
 
 # Tests replace this. Production talks to curl.
-def http_exchange(method, url, headers, body, insecure):
+def http_exchange(method, url, headers, body, insecure, ca_file=None):
     """Return (status:int|None, text:str, error:str|None).
 
     status is None on a transport failure (timeout, TLS, refused).
@@ -76,11 +87,17 @@ def http_exchange(method, url, headers, body, insecure):
         CONNECT_TIMEOUT,
         "--max-time",
         MAX_TIME,
+        "--proto",
+        "=http,https",
+        "--max-filesize",
+        str(MAX_RESPONSE_BYTES),
         "-w",
         "\n%{http_code}",
     ]
     if insecure:
         cmd.append("-k")
+    elif ca_file:
+        cmd.extend(["--cacert", ca_file])
     header_lines = ["%s: %s" % (key, value) for key, value in headers.items()]
     if body is not None:
         header_lines.append("Content-Type: application/json")
@@ -103,7 +120,7 @@ def http_exchange(method, url, headers, body, insecure):
             os.close(write_fd)
         cmd.extend(["-H", "@/dev/fd/%d" % read_fd, url])
         proc = subprocess.run(
-            cmd, capture_output=True, text=True, input=payload, pass_fds=(read_fd,)
+            cmd, capture_output=True, text=True, input=payload, pass_fds=(read_fd,), check=False
         )
     except FileNotFoundError:
         return None, "", "curl not found"
@@ -114,6 +131,8 @@ def http_exchange(method, url, headers, body, insecure):
 
     stdout = proc.stdout or ""
     stderr = (proc.stderr or "").strip()
+    if len(stdout) > MAX_RESPONSE_BYTES + 16:
+        return None, "", "response too large"
     body_text, sep, code_s = stdout.rpartition("\n")
     if not sep:
         body_text, code_s = "", stdout.strip()
@@ -137,6 +156,10 @@ def classify_curl(returncode, stderr):
         return "TLS verification failed"
     if returncode == 7:
         return "connection refused"
+    if returncode == 63:
+        return "response too large"
+    if returncode == 1:
+        return "URL must start with http:// or https://"
     if stderr:
         return stderr
     if returncode:
@@ -182,17 +205,30 @@ def parse_allow_insecure(value):
     return s in ("1", "true", "yes")
 
 
+def clean_text(value, limit=MAX_TEXT_CHARS):
+    """Bound text from the network or curl before it reaches the panel."""
+    if value is None:
+        return None
+    text = re.sub(r"[\x00-\x1f\x7f]+", " ", str(value)).strip()
+    if len(text) > limit:
+        text = text[: limit - 1].rstrip() + "…"
+    return text
+
+
 def envelope(state, error=None, ok=None, **fields):
     out = {
         "ok": bool(ok if ok is not None else (state in ("enabled", "paused", "disabled"))),
         "state": state,
-        "error": error,
+        "error": clean_text(error),
         "blocking": False,
         "timer": None,
         "queries": None,
         "gravity": None,
         "history": None,
         "recent_blocked": [],
+        "recent_scope": None,
+        "updates": None,
+        "warnings": None,
         "fetched_at": now_unix(),
     }
     if state == "enabled":
@@ -221,7 +257,7 @@ def parse_json_body(text):
     try:
         data = json.loads(raw)
     except ValueError:
-        raise FailedError("malformed JSON from Pi-hole")
+        raise FailedError("malformed JSON from Pi-hole") from None
     if data is None:
         return {}
     if not isinstance(data, dict):
@@ -272,9 +308,16 @@ def request(ctx, method, path, body=None, sid=None):
     }
     if sid:
         headers["X-FTL-SID"] = sid
-    status, text, terr = http_exchange(method, url, headers, body, ctx["insecure"])
+    status, text, terr = http_exchange(method, url, headers, body, ctx["insecure"], ctx.get("ca_file"))
     if terr:
         raise OfflineError(terr)
+    if status == 429:
+        # A proxy in front of the Pi-hole may answer 429 with HTML.
+        try:
+            payload = parse_json_body(text) if text else {}
+        except FailedError:
+            payload = {}
+        raise rate_limited(payload)
     payload = parse_json_body(text) if text else {}
     return status, payload
 
@@ -320,24 +363,56 @@ def read_password_file(path):
     return data.decode("utf-8", "replace").rstrip(" \t\r\n"), None
 
 
-def load_sid(ctx):
-    path = ctx["session_file"]
+def read_session(ctx):
+    """Return (origin, sid) from the session file, or None.
+
+    A file without an origin (written before sessions were keyed to their
+    host) returns None: nothing says which Pi-hole it belongs to.
+    """
     try:
-        data, _st = _read_owned_regular_file(path)
+        data, _st = _read_owned_regular_file(ctx["session_file"])
     except OSError:
-        return ""
-    return data.decode("utf-8", "replace").strip()
-
-
-def drop_sid(ctx):
-    path = ctx["session_file"]
+        return None
     try:
-        os.remove(path)
+        record = json.loads(data.decode("utf-8", "replace"))
+    except ValueError:
+        return None
+    if not isinstance(record, dict):
+        return None
+    origin = record.get("origin")
+    sid = record.get("sid")
+    if isinstance(origin, str) and isinstance(sid, str) and SID_RE.match(sid):
+        return origin, sid
+    return None
+
+
+def load_sid(ctx):
+    if ctx.get("ephemeral"):
+        return ctx.get("sid") or ""
+    record = read_session(ctx)
+    if record and record[0] == ctx["origin"]:
+        return record[1]
+    return ""
+
+
+def remove_session_file(ctx):
+    try:
+        os.remove(ctx["session_file"])
     except OSError:
         pass
 
 
+def drop_sid(ctx):
+    if ctx.get("ephemeral"):
+        ctx["sid"] = ""
+        return
+    remove_session_file(ctx)
+
+
 def save_sid(ctx, sid):
+    if ctx.get("ephemeral"):
+        ctx["sid"] = sid or ""
+        return
     if not sid:
         drop_sid(ctx)
         return
@@ -345,7 +420,7 @@ def save_sid(ctx, sid):
     os.makedirs(directory, mode=0o700, exist_ok=True)
     fd, tmp = tempfile.mkstemp(prefix="session.", dir=directory)
     try:
-        os.write(fd, (sid + "\n").encode("utf-8"))
+        os.write(fd, (dumps({"origin": ctx["origin"], "sid": sid}) + "\n").encode("utf-8"))
         os.fchmod(fd, 0o600)
         os.close(fd)
         fd = -1
@@ -356,6 +431,19 @@ def save_sid(ctx, sid):
             os.close(fd)
         if tmp and os.path.exists(tmp):
             os.remove(tmp)
+
+
+def retire_foreign_session(ctx):
+    """Log out a session saved for another host there; never send it here."""
+    record = read_session(ctx)
+    if record and record[0] == ctx["origin"]:
+        return
+    if record:
+        try:
+            request(dict(ctx, origin=record[0]), "DELETE", "/api/auth", sid=record[1])
+        except HelperError:
+            pass
+    remove_session_file(ctx)
 
 
 def replace_sid(ctx, new_sid):
@@ -386,9 +474,7 @@ def session_sid(payload):
     if not isinstance(session, dict):
         return ""
     sid = session.get("sid")
-    if sid is None:
-        return ""
-    return str(sid)
+    return sid if isinstance(sid, str) and SID_RE.match(sid) else ""
 
 
 def authenticate(ctx, held_sid=""):
@@ -447,6 +533,8 @@ def authenticate(ctx, held_sid=""):
 def ensure_session(ctx):
     if ctx.get("authed"):
         return
+    if not ctx.get("ephemeral"):
+        retire_foreign_session(ctx)
     if not load_sid(ctx):
         authenticate(ctx)
     ctx["authed"] = True
@@ -474,6 +562,23 @@ def api(ctx, method, path, body=None, retried=False):
     return payload
 
 
+def whole(value, default=0, limit=10**15):
+    """A non-negative integer from network JSON, or default.
+
+    JSON can carry 1e309 (infinity), NaN or huge values; int() of those
+    raises or yields nonsense, so they fall back to the default.
+    """
+    if isinstance(value, bool) or value is None:
+        return default
+    try:
+        n = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return default
+    if not math.isfinite(n) or n < 0 or n > limit:
+        return default
+    return int(n)
+
+
 def map_blocking(payload):
     raw = payload.get("blocking") if isinstance(payload, dict) else None
     timer = payload.get("timer") if isinstance(payload, dict) else None
@@ -486,10 +591,8 @@ def map_blocking(payload):
     else:
         raise FailedError("unexpected blocking status")
     remaining = None
-    if isinstance(timer, bool):
-        remaining = None
-    elif isinstance(timer, (int, float)) and timer > 0:
-        remaining = int(timer)
+    if isinstance(timer, (int, float)) and not isinstance(timer, bool):
+        remaining = whole(timer, None, limit=366 * 86400) or None
     if mode == "enabled":
         return "enabled", True, remaining if remaining else None
     if remaining:
@@ -507,9 +610,9 @@ def map_queries(payload):
             return 0
         try:
             n = float(value)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             return 0
-        return n
+        return n if math.isfinite(n) and abs(n) <= 1e15 else 0
 
     return {
         "total": int(num("total")),
@@ -526,17 +629,9 @@ def map_gravity(payload):
         return None
     domains = gravity.get("domains_being_blocked")
     last = gravity.get("last_update")
-    try:
-        domains_n = int(domains)
-    except (TypeError, ValueError):
-        domains_n = 0
-    try:
-        last_n = int(last)
-    except (TypeError, ValueError):
-        last_n = 0
     return {
-        "domains_being_blocked": domains_n,
-        "last_update": last_n,
+        "domains_being_blocked": whole(domains),
+        "last_update": whole(last),
     }
 
 
@@ -545,27 +640,42 @@ def map_history(payload):
     if not isinstance(rows, list):
         return None
     out = []
-    for row in rows:
+    for row in rows[-MAX_HISTORY_ROWS:]:
         if not isinstance(row, dict):
             continue
-        t = row.get("t", row.get("timestamp"))
-        try:
-            t_n = int(t)
-            total = int(row.get("total") or 0)
-            blocked = int(row.get("blocked") or 0)
-        except (TypeError, ValueError):
+        t_n = whole(row.get("t", row.get("timestamp")), None)
+        if t_n is None:
             continue
-        out.append({"t": t_n, "total": total, "blocked": blocked})
+        out.append({"t": t_n, "total": whole(row.get("total")), "blocked": whole(row.get("blocked"))})
     return out
 
 
 def map_recent_blocked(payload):
     blocked = payload.get("blocked") if isinstance(payload, dict) else None
-    if isinstance(blocked, list):
-        return [str(item) for item in blocked if item]
-    if isinstance(blocked, str) and blocked:
-        return [blocked]
-    return []
+    if isinstance(blocked, str):
+        blocked = [blocked]
+    return plain_domains(blocked)
+
+
+def map_blocked_queries(payload):
+    rows = payload.get("queries") if isinstance(payload, dict) else None
+    if not isinstance(rows, list):
+        return []
+    return plain_domains([row.get("domain") for row in rows if isinstance(row, dict)])
+
+
+def plain_domains(items):
+    if not isinstance(items, list):
+        return []
+    # Only plain domain names reach the panel and the Allow button.
+    out = []
+    for item in items:
+        domain = normalize_domain(item) if isinstance(item, str) else ""
+        if domain and domain not in out:
+            out.append(domain)
+        if len(out) >= MAX_DOMAINS:
+            break
+    return out
 
 
 def collect_status(ctx, full):
@@ -573,20 +683,17 @@ def collect_status(ctx, full):
     blocking = api(ctx, "GET", "/api/dns/blocking")
     state, is_blocking, timer = map_blocking(blocking)
     history = None
-    recent = []
+    recent, scope = [], None
+    updates = warnings = None
     if full:
         try:
             history = map_history(api(ctx, "GET", "/api/history"))
-        except AuthError:
-            raise
-        except HelperError:
+        except HelperError as exc:
+            stop_on(exc)
             history = None
-        try:
-            recent = map_recent_blocked(api(ctx, "GET", "/api/stats/recent_blocked?count=3"))
-        except AuthError:
-            raise
-        except HelperError:
-            recent = []
+        recent, scope = recent_blocks(ctx)
+        updates = optional(ctx, "/api/info/version", map_updates)
+        warnings = optional(ctx, "/api/info/messages/count", map_warning_count)
     return envelope(
         state,
         ok=True,
@@ -597,14 +704,120 @@ def collect_status(ctx, full):
         gravity=map_gravity(summary),
         history=history if full else None,
         recent_blocked=recent if full else [],
+        recent_scope=scope if full else None,
+        updates=updates if full else None,
+        warnings=warnings if full else None,
     )
 
 
+def stop_on(exc):
+    """A panel extra may fail quietly, except for auth or a rate limit.
+
+    Those end the whole status, so the panel shows setup or the widget
+    backs off instead of making more requests into the limit.
+    """
+    if isinstance(exc, AuthError) or exc.extra.get("rate_limited"):
+        raise exc
+
+
+def optional(ctx, path, mapper):
+    """A panel extra: its failure must not fail the status."""
+    try:
+        return mapper(api(ctx, "GET", path))
+    except HelperError as exc:
+        stop_on(exc)
+        return None
+
+
+VERSION_RE = re.compile(r"^[A-Za-z0-9._+-]{1,40}$")
+COMPONENTS = (("core", "Core"), ("web", "Web interface"), ("ftl", "FTL"))
+
+
+def map_updates(payload):
+    """Components whose installed and latest versions are both known and differ.
+
+    A Docker install is updated by pulling the image, so only the image
+    tag is compared there.
+    """
+    version = payload.get("version") if isinstance(payload, dict) else None
+    if not isinstance(version, dict):
+        return None
+
+    def known(value):
+        return value if isinstance(value, str) and VERSION_RE.match(value) else None
+
+    docker = version.get("docker")
+    if isinstance(docker, dict) and known(docker.get("local")) and known(docker.get("remote")):
+        pairs = [("Docker image", docker.get("local"), docker.get("remote"))]
+    else:
+        pairs = []
+        for key, name in COMPONENTS:
+            part = version.get(key)
+            if not isinstance(part, dict):
+                continue
+            local = part.get("local") if isinstance(part.get("local"), dict) else {}
+            remote = part.get("remote") if isinstance(part.get("remote"), dict) else {}
+            pairs.append((name, local.get("version"), remote.get("version")))
+    out = []
+    for name, local, remote in pairs:
+        if known(local) and known(remote) and local != remote:
+            out.append({"name": name, "local": local, "remote": remote})
+    return out
+
+
+def map_warning_count(payload):
+    count = payload.get("count") if isinstance(payload, dict) else None
+    if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+        return None
+    return min(count, 9999)
+
+
+IP_RE = re.compile(r"^[0-9A-Fa-f:.]{2,45}$")
+
+
+def recent_blocks(ctx):
+    """Blocked domains for this computer, else for the whole network.
+
+    The Pi-hole names the address it sees this computer at. Behind a
+    reverse proxy or NAT that is the proxy, whose own queries are few, so
+    an empty answer falls back to the network-wide list.
+    Returns (domains, "here" | "network" | None).
+    """
+    try:
+        addr = api(ctx, "GET", "/api/info/client").get("remote_addr")
+        if isinstance(addr, str) and IP_RE.match(addr):
+            path = "/api/queries?upstream=blocklist&length=50&client_ip=" + urllib.parse.quote(addr, safe="")
+            here = map_blocked_queries(api(ctx, "GET", path))
+            if here:
+                return here, "here"
+    except HelperError as exc:
+        stop_on(exc)
+    try:
+        network = map_recent_blocked(api(ctx, "GET", "/api/stats/recent_blocked?count=10"))
+    except HelperError as exc:
+        stop_on(exc)
+        return [], None
+    return network, "network" if network else None
+
+
 def collect_ping(ctx):
-    # Setup must verify the same endpoints the widget uses. Reporting a
-    # successful connection after only the summary endpoint works can leave a
-    # user with a widget that cannot show or control blocking state.
-    return collect_status(ctx, full=False)
+    # Setup tests draft settings, possibly for another host. Log in with them
+    # on a throwaway session, so a stored session can neither leak to that
+    # host nor hide a wrong password, and the stored file is left alone.
+    # It checks the same endpoints the widget uses: a connection that only
+    # reaches the summary would leave a widget that cannot control blocking.
+    ctx["ephemeral"] = True
+    ctx["sid"] = ""
+    try:
+        authenticate(ctx)
+        ctx["authed"] = True
+        return collect_status(ctx, full=False)
+    finally:
+        if ctx.get("sid"):
+            try:
+                request(ctx, "DELETE", "/api/auth", sid=ctx["sid"])
+            except HelperError:
+                pass
 
 
 def do_pause(ctx, seconds):
@@ -625,7 +838,10 @@ def normalize_domain(value):
 
 
 def add_allow(ctx, domain):
-    """Add an exact allow entry. Returns a short notice; raises FailedError."""
+    """Add an exact allow entry. Returns "allowed" or "already".
+
+    Raises FailedError with the Pi-hole's reason when it refuses.
+    """
     payload = api(
         ctx,
         "POST",
@@ -640,19 +856,22 @@ def add_allow(ctx, domain):
             first = errors[0] if isinstance(errors[0], dict) else {}
             message = str(first.get("error") or first.get("message") or "rejected")
             if "unique" in message.lower():
-                return "%s is already allowed" % domain
-            raise FailedError("could not allow %s: %s" % (domain, message))
-    return "allowed %s" % domain
+                return "already"
+            raise FailedError(message)
+    return "allowed"
 
 
 def do_allow(ctx, domain):
     # An allowlist rejection says nothing about the Pi-hole's health, so it
     # rides along as `action` on a normal status rather than replacing the
     # state with "failed". Auth and offline errors still propagate.
+    # The panel words the notice from `code`; `message` is the Pi-hole's
+    # reason when it refused.
     try:
-        action = {"ok": True, "message": add_allow(ctx, domain)}
+        action = {"ok": True, "code": add_allow(ctx, domain), "domain": domain, "message": None}
     except FailedError as exc:
-        action = {"ok": False, "message": exc.error}
+        stop_on(exc)
+        action = {"ok": False, "code": "failed", "domain": domain, "message": clean_text(exc.error)}
     result = collect_status(ctx, full=True)
     result["action"] = action
     return result
@@ -661,7 +880,9 @@ def do_allow(ctx, domain):
 def build_ctx(env):
     origin = normalize_origin(env.get("OMAPIHOLE_URL", ""))
     password_file = expand_path(env.get("OMAPIHOLE_PASSWORD_FILE") or DEFAULT_PASSWORD_FILE)
+    ca_raw = str(env.get("OMAPIHOLE_CA_FILE") or "").strip()
     return {
+        "ca_file": expand_path(ca_raw) if ca_raw else "",
         "origin": origin,
         "password_file": password_file,
         "insecure": parse_allow_insecure(env.get("OMAPIHOLE_ALLOW_INSECURE")),
@@ -676,7 +897,7 @@ def with_lock(env, fn):
         os.makedirs(directory, mode=0o700, exist_ok=True)
         fd = os.open(lock_path(env), os.O_CREAT | os.O_RDWR, 0o600)
     except OSError as exc:
-        raise FailedError("cannot write session state (%s)" % exc)
+        raise FailedError("cannot write session state (%s)" % exc) from exc
     try:
         fcntl.flock(fd, fcntl.LOCK_EX)
         return fn()
@@ -697,6 +918,10 @@ def dispatch(argv, env):
     _, pw_err = read_password_file(ctx["password_file"])
     if pw_err:
         raise AuthError(pw_err)
+    # The CA file only matters for HTTPS with verification on.
+    if (ctx["ca_file"] and not ctx["insecure"] and ctx["origin"].lower().startswith("https://")
+            and not os.path.isfile(ctx["ca_file"])):
+        raise FailedError("no CA certificate file at %s" % ctx["ca_file"])
 
     if command == "status":
         full = True
@@ -715,7 +940,7 @@ def dispatch(argv, env):
         try:
             seconds = int(rest[0])
         except ValueError:
-            raise SystemExit(usage("pause seconds must be an integer"))
+            raise SystemExit(usage("pause seconds must be an integer")) from None
         if seconds <= 0:
             raise SystemExit(usage("pause seconds must be > 0"))
         return do_pause(ctx, seconds)
@@ -737,8 +962,13 @@ def run(argv, env):
     args = list(argv[1:])
     if not args or args[0] in ("-h", "--help"):
         raise SystemExit(usage())
-    if not normalize_origin(env.get("OMAPIHOLE_URL", "")):
+    origin = normalize_origin(env.get("OMAPIHOLE_URL", ""))
+    if not origin:
         print_json(envelope("unconfigured", error="empty url"))
+        return 0
+    # A path is kept: a reverse proxy may serve the API under a prefix.
+    if not re.match(r"^https?://[^/?#\s]+(/[^?#\s]*)?$", origin, re.IGNORECASE):
+        print_json(envelope("failed", error="URL must start with http:// or https:// and name a host"))
         return 0
     try:
         result = with_lock(env, lambda: dispatch(argv, env))
@@ -747,7 +977,7 @@ def run(argv, env):
     except OfflineError as exc:
         result = envelope("offline", error=str(exc))
     except FailedError as exc:
-        result = envelope("failed", error=str(exc))
+        result = envelope("failed", error=str(exc), **exc.extra)
     print_json(result)
     return 0
 

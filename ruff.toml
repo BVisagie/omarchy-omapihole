@@ -1,0 +1,10 @@
+# The helper is a script without a .py extension.
+extend-include = ["scripts/omapihole"]
+target-version = "py314"
+line-length = 120
+
+[lint]
+extend-select = ["B"]
+# %-formatting is used throughout the helper and reads fine; rewriting it
+# would be churn with no behaviour change.
+ignore = ["UP031"]

@@ -2,6 +2,7 @@ import QtQuick
 import Quickshell
 import Quickshell.Io
 import qs.Commons
+import qs.Commons as Commons
 import qs.Ui
 import "Model.js" as Model
 
@@ -16,10 +17,21 @@ BarWidget {
     }
 
     readonly property string helperPath: localPath("scripts/omapihole")
+
+    // The plugin's own strings, following Setup > Language live.
+    readonly property QtObject strings: Commons.Translations { directory: Qt.resolvedUrl("i18n") }
+    function tr(key, english) { return root.strings.t(key, english) }
+    // What Model.js takes to word and number things in the current language.
+    readonly property var loc: ({
+        tr: function (key, english) { return root.strings.t(key, english) },
+        tn: function (key, count, english) { return root.strings.tn(key, count, english) },
+        num: function (value, places) { return Commons.I18n.formatNumber(value, places) }
+    })
     readonly property var coerced: Model.coerceSettings(root.settings)
     readonly property string apiOrigin: coerced.url
     readonly property string passwordFile: coerced.passwordFile
     readonly property bool allowInsecure: coerced.allowInsecure
+    readonly property string caFile: coerced.caFile
     readonly property int refreshSeconds: coerced.refreshSeconds
     readonly property string dashboardTarget: Model.dashboardUrl(root.settings)
     readonly property string hostName: Model.hostLabel(apiOrigin)
@@ -35,20 +47,27 @@ BarWidget {
     property bool pinging: false
     // Short-lived feedback for one-shot actions (copy, allow) shown in the panel.
     property var notice: null
+    // After a 429, timed polls wait until backoffUntil; manual refreshes don't.
+    property int backoffSeconds: 0
+    property double backoffUntil: 0
+
+    function timedPollAllowed() {
+        return Date.now() / 1000 >= backoffUntil
+    }
 
     readonly property string shownState: Model.displayState(snapshot, nowSec)
-    readonly property string pillLabel: Model.barLabel(snapshot, root.settings, nowSec)
+    readonly property string pillLabel: Model.barLabel(snapshot, root.settings, nowSec, root.loc)
     // The mark's knob sits right only while blocking is known to be on.
     // Paused/off slide it left (urgent); every "don't know" state is muted
     // and also left, since nothing is vouching for the hole.
     readonly property bool markOn: shownState === "enabled"
     readonly property string colorRole: Model.barColorRole(snapshot, nowSec)
     readonly property color pillColor: {
-        if (colorRole === "urgent") return root.bar ? root.bar.urgent : Color.urgent
-        if (colorRole === "muted") return Color.muted
-        return root.bar ? root.bar.barForeground : Color.foreground
+        if (colorRole === "urgent") return root.bar ? root.bar.urgent : Commons.Color.urgent
+        if (colorRole === "muted") return Commons.Color.muted
+        return root.bar ? root.bar.barForeground : Commons.Color.foreground
     }
-    readonly property string tooltipBody: Model.tooltipText(snapshot, root.settings, nowSec)
+    readonly property string tooltipBody: Model.tooltipText(snapshot, root.settings, nowSec, root.loc)
     readonly property bool stale: Model.isStale(snapshot)
     readonly property bool helperBusy: helperProc.running
     readonly property bool configured: apiOrigin !== ""
@@ -116,7 +135,7 @@ BarWidget {
         var s = Model.trim(text)
         if (!s) return
         Util.execArgv(["wl-copy", "--", s])
-        flash("copied " + s, true)
+        flash(Model.fill(tr("notice.copied", "Copied %1"), s), true)
     }
 
     function flash(text, ok) {
@@ -128,7 +147,7 @@ BarWidget {
     // Only the first instance polls; every result is handed to the others so
     // the bars agree and the Pi-hole is not polled once per monitor.
     function peers() {
-        if (!root.bar || typeof root.bar.moduleWidgets !== "function") return []
+        if (!root.bar) return []
         var items = root.bar.moduleWidgets(root.moduleName) || []
         var out = []
         for (var i = 0; i < items.length; i++) {
@@ -138,7 +157,7 @@ BarWidget {
     }
 
     function isPrimary() {
-        if (!root.bar || typeof root.bar.moduleWidgets !== "function") return true
+        if (!root.bar) return true
         var items = root.bar.moduleWidgets(root.moduleName) || []
         if (items.length === 0 || items.indexOf(root) < 0) return true
         return items[0] === root
@@ -147,15 +166,22 @@ BarWidget {
     function shareSnapshot() {
         var others = peers()
         for (var i = 0; i < others.length; i++) {
-            if (typeof others[i].adoptSnapshot === "function") others[i].adoptSnapshot(root.snapshot)
+            if (typeof others[i].adoptSnapshot === "function")
+                others[i].adoptSnapshot(root.snapshot, { seconds: root.backoffSeconds, until: root.backoffUntil })
         }
     }
 
-    function adoptSnapshot(next) {
+    // Peers on other monitors take the snapshot and the 429 backoff, so an
+    // open panel elsewhere does not keep polling into the limit.
+    function adoptSnapshot(next, backoff) {
         // A peer may still be finishing a request to the previous host.
         if (!next || !configured || next.origin !== apiOrigin) return
         snapshot = next
         zeroPollSent = false
+        if (backoff) {
+            backoffSeconds = backoff.seconds
+            backoffUntil = backoff.until
+        }
     }
 
     function pingWith(fields) {
@@ -168,36 +194,35 @@ BarWidget {
         pingWith(null)
     }
 
-    function openDashboard() {
-        var url = dashboardTarget
+    function rightClicked() {
+        var action = Model.rightClickAction(root.snapshot, root.settings, Date.now() / 1000)
+        if (action.type === "pause") root.pause(action.seconds)
+        else if (action.type === "resume") root.resume()
+        else root.openDashboard()
+    }
+
+    function openDashboard(page) {
+        var url = page ? Model.dashboardUrl(root.settings, page) : dashboardTarget
         if (!url) return
         Util.execArgv(["omarchy-launch-browser", url])
     }
 
-    function persistSetting(key, value, asJson) {
-        if (!root.bar || typeof root.bar.run !== "function") return
-        if (typeof key !== "string" || !/^[A-Za-z][A-Za-z0-9]*$/.test(key)) return
-        var quote = (root.bar && typeof root.bar.shellQuote === "function")
-            ? root.bar.shellQuote
-            : ((typeof Util !== "undefined" && Util.shellQuote)
-                ? Util.shellQuote
-                : function (v) { return "'" + String(v || "").replace(/'/g, "'\\''") + "'" })
-        var quotedId = quote("bvisagie.omapihole")
-        var quotedValue = quote(String(value))
-        var cmd = "omarchy bar set " + quotedId + " " + key + " " + quotedValue
-        if (asJson) cmd += " --json"
-        root.bar.run(cmd)
-    }
-
+    // One write of the whole entry: updateEntryInline replaces it, so the
+    // fields the setup form does not edit (barMetric, ...) are carried over.
     function persistSetup(fields) {
-        if (!fields) return
-        if (fields.url !== undefined) persistSetting("url", Model.apiOrigin(fields.url), false)
-        if (fields.passwordFile !== undefined) persistSetting("passwordFile", String(fields.passwordFile), false)
-        if (fields.dashboardUrl !== undefined) persistSetting("dashboardUrl", String(fields.dashboardUrl), false)
-        if (fields.allowInsecure !== undefined)
-            persistSetting("allowInsecure", fields.allowInsecure ? "true" : "false", true)
-        if (fields.refreshSeconds !== undefined)
-            persistSetting("refreshSeconds", String(Model.refreshSeconds(fields.refreshSeconds)), true)
+        if (!fields || !root.bar || !root.bar.shell
+            || typeof root.bar.shell.updateEntryInline !== "function") return
+        var entry = {}
+        var key
+        var current = root.settings || {}
+        for (key in current) entry[key] = current[key]
+        if (fields.url !== undefined) entry.url = Model.apiOrigin(fields.url)
+        if (fields.passwordFile !== undefined) entry.passwordFile = String(fields.passwordFile)
+        if (fields.dashboardUrl !== undefined) entry.dashboardUrl = String(fields.dashboardUrl)
+        if (fields.allowInsecure !== undefined) entry.allowInsecure = fields.allowInsecure === true
+        if (fields.caFile !== undefined) entry.caFile = Model.trim(fields.caFile)
+        if (fields.refreshSeconds !== undefined) entry.refreshSeconds = Model.refreshSeconds(fields.refreshSeconds)
+        root.bar.shell.updateEntryInline(root.moduleName, entry)
     }
 
     function helperEnv(action) {
@@ -205,10 +230,12 @@ BarWidget {
         var url = src.url !== undefined ? Model.apiOrigin(src.url) : apiOrigin
         var file = src.passwordFile !== undefined ? Model.passwordFile(src.passwordFile) : passwordFile
         var insecure = src.allowInsecure !== undefined ? Model.parseBool(src.allowInsecure, false) : allowInsecure
+        var ca = src.caFile !== undefined ? Model.trim(src.caFile) : caFile
         return {
             "OMAPIHOLE_URL": url,
             "OMAPIHOLE_PASSWORD_FILE": file,
-            "OMAPIHOLE_ALLOW_INSECURE": insecure ? "1" : "0"
+            "OMAPIHOLE_ALLOW_INSECURE": insecure ? "1" : "0",
+            "OMAPIHOLE_CA_FILE": ca
         }
     }
 
@@ -262,8 +289,15 @@ BarWidget {
             error: "malformed helper output",
             fetched_at: Date.now() / 1000
         }
+        if (result.rate_limited === true) {
+            backoffSeconds = Model.nextBackoff(backoffSeconds)
+            backoffUntil = Date.now() / 1000 + backoffSeconds
+        } else if (result.ok === true) {
+            backoffSeconds = 0
+            backoffUntil = 0
+        }
         if (inFlight === "allow") {
-            if (result.action) flash(result.action.message, result.action.ok === true)
+            if (result.action) flash(Model.allowNotice(result.action, root.loc), result.action.ok === true)
             else if (result.error) flash(result.error, false)
         }
         // Dropped when the URL changed while this request was running.
@@ -272,12 +306,14 @@ BarWidget {
         snapshot = next
         if (result.ok === true) zeroPollSent = false
         shareSnapshot()
-        if ((inFlight === "pause" || inFlight === "resume") && opened)
+        if ((inFlight === "pause" || inFlight === "resume") && opened && result.ok === true)
             pendingActions = Model.queueAction(pendingActions, { type: "full" })
     }
 
     function drainQueue() {
         var queue = pendingActions
+        // A timed poll queued before a 429 answer waits out the backoff too.
+        while (queue.length > 0 && queue[0].timed === true && !timedPollAllowed()) queue = queue.slice(1)
         pendingActions = queue.length > 1 ? queue.slice(1) : []
         inFlight = ""
         inFlightOrigin = ""
@@ -370,19 +406,19 @@ BarWidget {
 
     Timer {
         id: pollTimer
-        interval: root.refreshSeconds * 1000
-        running: root.configured
+        interval: Math.max(1, root.refreshSeconds) * 1000
+        running: root.configured && root.refreshSeconds > 0
         repeat: true
         triggeredOnStart: true
-        onTriggered: if (root.isPrimary()) root.enqueue({ type: "bar" })
+        onTriggered: if (root.isPrimary() && root.timedPollAllowed()) root.enqueue({ type: "bar", timed: true })
     }
 
     Timer {
         id: fullTimer
         interval: 60000
-        running: root.opened && root.configured
+        running: root.opened && root.configured && root.refreshSeconds > 0
         repeat: true
-        onTriggered: root.enqueue({ type: "full" })
+        onTriggered: if (root.timedPollAllowed()) root.enqueue({ type: "full", timed: true })
     }
 
     Timer {
@@ -431,9 +467,8 @@ BarWidget {
                 animate: !root.bar || root.bar.foregroundAnimationEnabled
             }
 
-            Text {
+            PlainText {
                 visible: root.pillLabel !== ""
-                textFormat: Text.PlainText
                 text: root.pillLabel
                 color: root.pillColor
                 font.family: button.fontFamily
@@ -444,7 +479,7 @@ BarWidget {
 
                 Behavior on color {
                     enabled: !root.bar || root.bar.foregroundAnimationEnabled
-                    ColorAnimation { duration: 160 }
+                    ColorAnimation { duration: Style.duration(160) }
                 }
             }
         }
@@ -452,7 +487,7 @@ BarWidget {
         onPressed: function (b) {
             if (root.bar) root.bar.hideTooltip(button)
             if (!root.bar) return
-            if (b === Qt.RightButton) root.openDashboard()
+            if (b === Qt.RightButton) root.rightClicked()
             else if (b === Qt.MiddleButton) root.refresh()
             else root.togglePanel()
         }

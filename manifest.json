@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "bvisagie.omapihole",
   "name": "OmaPihole",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "author": "BVisagie",
   "license": "MIT",
   "homepage": "https://github.com/BVisagie/omarchy-omapihole",
@@ -17,6 +17,12 @@
     "displayName": "OmaPihole",
     "description": "Pi-hole presence in the Omarchy bar: state, pause, glance.",
     "category": "Network",
+    "aliases": [
+      "pihole",
+      "pi-hole",
+      "dns",
+      "adblock"
+    ],
     "allowMultiple": false,
     "defaultSection": "right",
     "defaults": {
@@ -25,44 +31,78 @@
       "passwordFile": "~/.config/omapihole/password",
       "allowInsecure": false,
       "refreshSeconds": 20,
-      "barMetric": "percent"
+      "barMetric": "percent",
+      "caFile": "",
+      "rightClick": "dashboard"
     },
     "schema": [
       {
         "key": "url",
         "type": "string",
         "label": "Pi-hole API URL",
-        "description": "API origin with no trailing path, e.g. http://pi.hole or https://192.168.1.2. Empty means unconfigured."
+        "description": "API URL, with the port unless it is 80 for http or 443 for https, e.g. http://pi.hole:8080 or https://192.168.1.2. Empty means unconfigured.",
+        "defaultValue": ""
       },
       {
         "key": "dashboardUrl",
         "type": "string",
         "label": "Dashboard URL",
-        "description": "Optional. Right-click and panel ↗ target. Empty uses the API origin plus /admin/."
+        "description": "Optional. Where the dashboard opens, when the web interface is not at the API URL plus /admin/. Not used for API requests.",
+        "defaultValue": ""
       },
       {
         "key": "passwordFile",
-        "type": "string",
+        "type": "path",
         "label": "App password file",
-        "description": "Filesystem path to a Pi-hole app password. Must be mode 600. Default ~/.config/omapihole/password, outside ~/.config/omarchy/ so it is not committed with dotfiles. May be empty or missing on a passwordless Pi-hole."
+        "description": "Filesystem path to a Pi-hole app password. Must be mode 600. Default ~/.config/omapihole/password, outside ~/.config/omarchy/ so it is not committed with dotfiles. May be empty or missing on a passwordless Pi-hole.",
+        "defaultValue": "~/.config/omapihole/password"
       },
       {
         "key": "allowInsecure",
         "type": "boolean",
         "label": "Allow insecure TLS",
-        "description": "Skip TLS certificate verification for self-signed LAN HTTPS. Default false."
+        "description": "Skip certificate verification for https:// URLs. No effect on http://, and it cannot fix a wrong address or port. Prefer a CA certificate file.",
+        "defaultValue": false
+      },
+      {
+        "key": "caFile",
+        "type": "path",
+        "label": "CA certificate file",
+        "description": "Optional PEM file that signed the Pi-hole's HTTPS certificate, passed to curl as --cacert. The safe alternative to Allow insecure TLS. Empty uses the system trust store.",
+        "defaultValue": ""
       },
       {
         "key": "refreshSeconds",
         "type": "integer",
         "label": "Bar refresh (seconds)",
-        "description": "How often the bar polls Pi-hole. Integer 10–120, default 20."
+        "min": 0,
+        "max": 120,
+        "step": 10,
+        "description": "How often the bar polls Pi-hole, 10–120 seconds, default 20. 0 turns timed polling off: the widget then asks only at start-up, when the panel opens, when you refresh or act, and once when a pause runs out.",
+        "defaultValue": 20
       },
       {
         "key": "barMetric",
-        "type": "string",
+        "type": "enum",
         "label": "Bar metric",
-        "description": "What the bar shows while blocking is on: percent (default), rate (queries per minute), or queries (compact 24h total). Overridden by pause/off."
+        "options": [
+          "percent",
+          "rate",
+          "queries"
+        ],
+        "description": "What the bar shows while blocking is on: percent (default), rate (queries per minute), or queries (compact 24h total). Overridden by pause/off.",
+        "defaultValue": "percent"
+      },
+      {
+        "key": "rightClick",
+        "type": "enum",
+        "label": "Right click",
+        "options": [
+          "dashboard",
+          "pause"
+        ],
+        "description": "What right-clicking the widget does: open the dashboard (default), or pause blocking for five minutes, and resume while it is paused or off.",
+        "defaultValue": "dashboard"
       }
     ]
   }

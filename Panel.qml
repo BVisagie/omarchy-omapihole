@@ -1,5 +1,6 @@
 import QtQuick
 import qs.Commons
+import qs.Commons as Commons
 import qs.Ui
 import "Model.js" as Model
 import "PopupColors.js" as PopupColors
@@ -38,26 +39,31 @@ Panel {
     readonly property var pingResult: hostWidget ? hostWidget.lastPing : null
     readonly property bool pinging: hostWidget ? hostWidget.pinging === true : false
     readonly property var notice: hostWidget ? hostWidget.notice : null
+    // The host widget owns the catalog; English until it is injected.
+    readonly property var loc: hostWidget ? hostWidget.loc : null
+    function tr(key, english) { return hostWidget ? hostWidget.tr(key, english) : english }
     readonly property var dataAge: Model.dataAge(snapshot, nowSec)
     readonly property string freshness: {
-        if (helperBusy) return "Refreshing…"
+        if (helperBusy) return tr("panel.refreshing", "Refreshing…")
         if (dataAge === null) return ""
-        return (stale ? "Last data " : "Updated ") + Model.formatAge(dataAge)
+        return Model.fill(stale ? tr("panel.lastData", "Last data %1") : tr("panel.updated", "Updated %1"),
+            Model.formatAge(dataAge, loc))
     }
     // The transparent bar adapts its text to the wallpaper; the popup has
-    // its own palette. Older shells use the foundational palette instead.
-    readonly property color popupFg: Color.popups ? Color.popups.text : Color.foreground
-    readonly property color popupBg: Color.popups ? Color.popups.background : Color.background
+    // its own palette.
+    readonly property color popupFg: Commons.Color.popups.text
+    readonly property color popupBg: Commons.Color.popups.background
     // Keep theme-muted text when readable; otherwise use popup text without
     // changing its alpha. Contrast is measured against the popup's base RGB.
-    readonly property color mutedFg: PopupColors.readableMuted(Color.muted, root.popupFg, root.popupBg)
-    readonly property color urgentFg: root.bar ? root.bar.urgent : Color.urgent
+    readonly property color mutedFg: PopupColors.readableMuted(Commons.Color.muted, root.popupFg, root.popupBg)
+    readonly property color urgentFg: root.bar ? root.bar.urgent : Commons.Color.urgent
     readonly property string fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
     readonly property bool holeOpen: shownState === "paused" || shownState === "disabled"
 
     property string draftUrl: ""
     property string draftPasswordFile: ""
     property string draftDashboardUrl: ""
+    property string draftCaFile: ""
     property bool draftAllowInsecure: false
     property bool awaitingTest: false
     property bool settingsOpen: false
@@ -72,14 +78,14 @@ Panel {
     property string allowArmed: ""
 
     readonly property var chips: {
-        if (shownState === "paused") return [{ id: "resume", label: "Resume" }]
-        if (shownState === "disabled") return [{ id: "enable", label: "Enable" }]
+        if (shownState === "paused") return [{ id: "resume", label: tr("action.resume", "Resume") }]
+        if (shownState === "disabled") return [{ id: "enable", label: tr("action.enable", "Enable") }]
         if (shownState === "enabled")
             return [
-                { id: "30", label: "30s" },
-                { id: "300", label: "5m" },
-                { id: "900", label: "15m" },
-                { id: "3600", label: "1h" }
+                { id: "30", label: tr("pause.30s", "30s") },
+                { id: "300", label: tr("pause.5m", "5m") },
+                { id: "900", label: tr("pause.15m", "15m") },
+                { id: "3600", label: tr("pause.1h", "1h") }
             ]
         return []
     }
@@ -113,29 +119,14 @@ Panel {
     }
 
     function switchPanel(direction) {
-        if (root.bar && typeof root.bar.switchPanelFrom === "function")
-            return root.bar.switchPanelFrom(root.barIdentity, direction)
-        return false
+        return root.bar ? root.bar.switchPanelFrom(root.barIdentity, direction) : false
     }
 
-    // The host Bar exposes a writable property, but the PluginBarApi facade
-    // third-party widgets actually get exposes it read-only alongside a setter.
-    // Prefer the setter, and never let a read-only bar throw: this runs inside
-    // open()/close(), and a throw here aborts them before the panel controller
-    // is touched, leaving the panel stuck open and holding keyboard focus.
+    // The plugin bar facade exposes the flag read-only beside this setter.
+    // Writing the property would throw inside open()/close() and leave the
+    // panel stuck open, so always go through the setter.
     function setCenterHoverRevealSuppressed(value) {
-        if (!root.bar) return
-        if (typeof root.bar.setCenterHoverRevealSuppressed === "function") {
-            root.bar.setCenterHoverRevealSuppressed(value)
-            return
-        }
-        if ("centerHoverRevealSuppressed" in root.bar) {
-            try {
-                root.bar.centerHoverRevealSuppressed = value
-            } catch (e) {
-                // Read-only on this bar. The suppression is cosmetic, so skip it.
-            }
-        }
+        if (root.bar) root.bar.setCenterHoverRevealSuppressed(value)
     }
 
     function loadDrafts() {
@@ -143,12 +134,14 @@ Panel {
         draftPasswordFile = String(setting("passwordFile", Model.DEFAULT_PASSWORD_FILE) || Model.DEFAULT_PASSWORD_FILE)
         draftDashboardUrl = String(setting("dashboardUrl", "") || "")
         draftAllowInsecure = Model.parseBool(setting("allowInsecure", false), false)
+        draftCaFile = String(setting("caFile", "") || "")
         testMessage = ""
         testOk = false
         awaitingTest = false
         if (urlField) urlField.text = draftUrl
         if (passwordField) passwordField.text = draftPasswordFile
         if (dashboardField) dashboardField.text = draftDashboardUrl
+        if (caField) caField.text = draftCaFile
     }
 
     function saveDrafts() {
@@ -157,14 +150,15 @@ Panel {
             url: draftUrl,
             passwordFile: draftPasswordFile,
             dashboardUrl: draftDashboardUrl,
-            allowInsecure: draftAllowInsecure
+            allowInsecure: draftAllowInsecure,
+            caFile: draftCaFile
         })
     }
 
     function saveOnly() {
         saveDrafts()
         testOk = true
-        testMessage = "Saved."
+        testMessage = tr("setup.saved", "Saved.")
     }
 
     function testConnection() {
@@ -174,7 +168,8 @@ Panel {
         hostWidget.pingWith({
             url: draftUrl,
             passwordFile: draftPasswordFile,
-            allowInsecure: draftAllowInsecure
+            allowInsecure: draftAllowInsecure,
+            caFile: draftCaFile
         })
     }
 
@@ -199,13 +194,13 @@ Panel {
         awaitingTest = false
         testOk = pingResult.ok === true
         if (testOk) {
-            testMessage = "Connected and saved."
+            testMessage = tr("setup.connected", "Connected and saved.")
             saveDrafts()
             // Saving identical settings changes nothing, so the widget would
             // not re-poll on its own (e.g. after fixing the password file).
             if (hostWidget) hostWidget.refreshFull()
         } else {
-            testMessage = pingResult.error ? Model.sentence(pingResult.error) : "Connection failed."
+            testMessage = pingResult.error ? Model.sentence(pingResult.error) : tr("setup.failed", "Connection failed.")
         }
     }
 
@@ -306,6 +301,7 @@ Panel {
             id: keyCatcher
             anchors.fill: parent
             blocked: urlField.activeFocus || passwordField.activeFocus || dashboardField.activeFocus
+                || caField.activeFocus
             onCloseRequested: {
                 if (root.settingsOpen) root.closeSettings()
                 else root.close()
@@ -349,12 +345,11 @@ Panel {
                                 anchors.verticalCenter: parent.verticalCenter
                                 color: root.holeOpen
                                     ? root.urgentFg
-                                    : (root.shownState === "enabled" ? Color.accent : root.mutedFg)
+                                    : (root.shownState === "enabled" ? Commons.Color.accent : root.mutedFg)
                             }
 
-                            Text {
-                                textFormat: Text.PlainText
-                                text: Model.headerStatus(root.snapshot, root.nowSec, root.apiOrigin)
+                            PlainText {
+                                text: Model.headerStatus(root.snapshot, root.nowSec, root.apiOrigin, root.loc)
                                 color: root.holeOpen ? root.urgentFg : root.popupFg
                                 font.family: root.fontFamily
                                 font.pixelSize: Style.font.body
@@ -369,8 +364,7 @@ Panel {
                             anchors.verticalCenter: parent.verticalCenter
                             spacing: Style.space(6)
 
-                            Text {
-                                textFormat: Text.PlainText
+                            PlainText {
                                 text: root.hostName
                                 color: root.mutedFg
                                 font.family: root.fontFamily
@@ -381,9 +375,9 @@ Panel {
                             PanelActionButton {
                                 iconText: ""
                                 foreground: root.popupFg
-                                hoverColor: Color.accent
+                                hoverColor: Commons.Color.accent
                                 fontFamily: root.fontFamily
-                                tooltipText: "Open dashboard (o)"
+                                tooltipText: root.tr("panel.openDashboard", "Open dashboard (o)")
                                 enabled: !!(root.hostWidget && root.hostWidget.dashboardTarget)
                                 onClicked: if (root.hostWidget) root.hostWidget.openDashboard()
                             }
@@ -391,34 +385,32 @@ Panel {
                             PanelActionButton {
                                 visible: !root.needsSetup
                                 iconText: ""
-                                foreground: root.settingsOpen ? Color.accent : root.popupFg
-                                hoverColor: Color.accent
+                                foreground: root.settingsOpen ? Commons.Color.accent : root.popupFg
+                                hoverColor: Commons.Color.accent
                                 fontFamily: root.fontFamily
-                                tooltipText: root.settingsOpen ? "Close settings" : "Settings (s)"
+                                tooltipText: root.settingsOpen ? root.tr("panel.closeSettings", "Close settings") : root.tr("panel.settings", "Settings (s)")
                                 onClicked: root.settingsOpen ? root.closeSettings() : root.openSettings()
                             }
                         }
                     }
 
-                    Text {
+                    PlainText {
                         visible: root.awayFromHome && !root.showSetup
                         width: parent.width
                         wrapMode: Text.WordWrap
-                        textFormat: Text.PlainText
-                        text: "Your home Pi-hole is unavailable from this network."
-                            + (root.dataAge !== null && root.hasNumbers
-                                ? " Showing data from " + Model.formatAge(root.dataAge) + "."
-                                : "")
+                        text: root.dataAge !== null && root.hasNumbers
+                            ? Model.fill(root.tr("panel.awayWithData", "Your home Pi-hole is unavailable from this network. Showing data from %1."),
+                                Model.formatAge(root.dataAge, root.loc))
+                            : root.tr("panel.away", "Your home Pi-hole is unavailable from this network.")
                         color: root.popupFg
                         font.family: root.fontFamily
                         font.pixelSize: Style.font.bodySmall
                     }
 
-                    Text {
+                    PlainText {
                         visible: !!(root.snapshot && root.snapshot.error) && !root.showSetup && !root.awayFromHome
                         width: parent.width
                         wrapMode: Text.WordWrap
-                        textFormat: Text.PlainText
                         text: root.snapshot && root.snapshot.error ? Model.sentence(root.snapshot.error) : ""
                         color: root.mutedFg
                         font.family: root.fontFamily
@@ -427,11 +419,48 @@ Panel {
 
                     Button {
                         visible: (root.shownState === "offline" || root.shownState === "failed") && !root.showSetup
-                        text: "Retry"
+                        text: root.tr("action.retry", "Retry")
                         bordered: true
                         foreground: root.popupFg
                         fontFamily: root.fontFamily
                         onClicked: if (root.hostWidget) root.hostWidget.refreshFull()
+                    }
+
+                    PlainText {
+                        id: updateText
+                        visible: text !== "" && !root.showSetup
+                        width: parent.width
+                        wrapMode: Text.WordWrap
+                        text: Model.updateLine(root.snapshot, root.loc)
+                        color: updateArea.containsMouse ? Commons.Color.accent : root.popupFg
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.font.bodySmall
+
+                        MouseArea {
+                            id: updateArea
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: if (root.hostWidget) root.hostWidget.openDashboard()
+                        }
+                    }
+
+                    PlainText {
+                        visible: text !== "" && !root.showSetup
+                        width: parent.width
+                        wrapMode: Text.WordWrap
+                        text: Model.warningsLine(root.snapshot, root.loc)
+                        color: warningsArea.containsMouse ? Commons.Color.accent : root.urgentFg
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.font.bodySmall
+
+                        MouseArea {
+                            id: warningsArea
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: if (root.hostWidget) root.hostWidget.openDashboard("messages")
+                        }
                     }
 
                     // ---- Setup form
@@ -447,16 +476,15 @@ Panel {
 
                             Repeater {
                                 model: [
-                                    "1. On the Pi-hole: Settings → Web interface / API → app password.",
-                                    "2. Save it in the password file below and chmod 600 it. Keep it out of any dotfiles repo.",
-                                    "3. Enter the API URL, then Test connection."
+                                    root.tr("setup.step1", "1. On the Pi-hole: Settings → Web interface / API → app password."),
+                                    root.tr("setup.step2", "2. Save it in the password file below and chmod 600 it. Keep it out of any dotfiles repo."),
+                                    root.tr("setup.step3", "3. Enter the API URL, then Test connection.")
                                 ]
 
-                                Text {
+                                PlainText {
                                     required property string modelData
                                     width: parent.width
                                     wrapMode: Text.WordWrap
-                                    textFormat: Text.PlainText
                                     text: modelData
                                     color: root.popupFg
                                     font.family: root.fontFamily
@@ -464,31 +492,29 @@ Panel {
                                 }
                             }
 
-                            Text {
+                            PlainText {
                                 width: parent.width
                                 topPadding: Style.space(4)
                                 wrapMode: Text.WordWrap
-                                textFormat: Text.PlainText
-                                text: "A Pi-hole has one app password, and generating a new one signs out everything using the old one. If another integration already has it, reuse it. The web password with 2FA will not work."
+                                text: root.tr("setup.appPasswordNote", "A Pi-hole has one app password, and generating a new one signs out everything using the old one. If another integration already has it, reuse it. The web password with 2FA will not work.")
                                 color: root.mutedFg
                                 font.family: root.fontFamily
                                 font.pixelSize: Style.font.caption
                             }
                         }
 
-                        Text {
+                        PlainText {
                             visible: root.shownState === "auth" && !!(root.snapshot && root.snapshot.error)
                             width: parent.width
                             wrapMode: Text.WordWrap
-                            textFormat: Text.PlainText
                             text: root.snapshot && root.snapshot.error ? Model.sentence(root.snapshot.error) : ""
                             color: root.urgentFg
                             font.family: root.fontFamily
                             font.pixelSize: Style.font.bodySmall
                         }
 
-                        Text {
-                            text: "URL"
+                        PlainText {
+                            text: root.tr("setup.url", "URL")
                             color: root.mutedFg
                             font.family: root.fontFamily
                             font.pixelSize: Style.font.caption
@@ -504,11 +530,11 @@ Panel {
                             onAccepted: root.testConnection()
                             Keys.onEscapePressed: root.leaveField()
                             KeyNavigation.tab: passwordField
-                            KeyNavigation.backtab: dashboardField
+                            KeyNavigation.backtab: caField
                         }
 
-                        Text {
-                            text: "Password file"
+                        PlainText {
+                            text: root.tr("setup.passwordFile", "Password file")
                             color: root.mutedFg
                             font.family: root.fontFamily
                             font.pixelSize: Style.font.caption
@@ -527,8 +553,8 @@ Panel {
                             KeyNavigation.backtab: urlField
                         }
 
-                        Text {
-                            text: "Dashboard URL (optional)"
+                        PlainText {
+                            text: root.tr("setup.dashboardUrl", "Dashboard URL (optional)")
                             color: root.mutedFg
                             font.family: root.fontFamily
                             font.pixelSize: Style.font.caption
@@ -538,29 +564,48 @@ Panel {
                         TextField {
                             id: dashboardField
                             width: parent.width
-                            placeholderText: "defaults to URL + /admin/"
+                            placeholderText: root.tr("setup.dashboardPlaceholder", "defaults to URL + /admin/")
                             foreground: root.popupFg
                             onTextChanged: root.draftDashboardUrl = text
                             onAccepted: root.testConnection()
                             Keys.onEscapePressed: root.leaveField()
-                            KeyNavigation.tab: urlField
+                            KeyNavigation.tab: caField
                             KeyNavigation.backtab: passwordField
+                        }
+
+                        PlainText {
+                            text: root.tr("setup.caFile", "CA certificate file (optional)")
+                            color: root.mutedFg
+                            font.family: root.fontFamily
+                            font.pixelSize: Style.font.caption
+                            font.bold: true
+                        }
+
+                        TextField {
+                            id: caField
+                            width: parent.width
+                            placeholderText: root.tr("setup.caFilePlaceholder", "PEM file that signed the Pi-hole's HTTPS certificate")
+                            foreground: root.popupFg
+                            onTextChanged: root.draftCaFile = text
+                            onAccepted: root.testConnection()
+                            Keys.onEscapePressed: root.leaveField()
+                            KeyNavigation.tab: urlField
+                            KeyNavigation.backtab: dashboardField
                         }
 
                         Toggle {
                             width: parent.width
-                            label: "Allow insecure TLS"
-                            description: "Skip certificate checks for self-signed LAN HTTPS."
+                            label: root.tr("setup.insecure", "Allow insecure TLS")
+                            description: root.tr("setup.insecureHelp", "Skip certificate checks for self-signed LAN HTTPS. A CA certificate file is the safer choice.")
                             checked: root.draftAllowInsecure
                             foreground: root.popupFg
                             onClicked: root.draftAllowInsecure = !root.draftAllowInsecure
                         }
 
-                        Text {
+                        PlainText {
                             visible: root.testMessage !== ""
                             width: parent.width
                             wrapMode: Text.WordWrap
-                            textFormat: Text.PlainText
                             text: root.testMessage
                             color: root.testOk ? root.popupFg : root.urgentFg
                             font.family: root.fontFamily
@@ -571,28 +616,28 @@ Panel {
                             spacing: Style.space(8)
 
                             Button {
-                                text: root.pinging ? "Testing…" : "Test connection"
+                                text: root.pinging ? root.tr("setup.testing", "Testing…") : root.tr("setup.test", "Test connection")
                                 bordered: true
                                 foreground: root.popupFg
                                 fontFamily: root.fontFamily
                                 enabled: !root.pinging
                                 iconSpinning: root.pinging
-                                tooltipText: "Test, and save on success (Enter)"
+                                tooltipText: root.tr("setup.testTip", "Test, and save on success (Enter)")
                                 onClicked: root.testConnection()
                             }
 
                             Button {
-                                text: "Save"
+                                text: root.tr("setup.save", "Save")
                                 bordered: true
                                 foreground: root.popupFg
                                 fontFamily: root.fontFamily
-                                tooltipText: "Save without testing"
+                                tooltipText: root.tr("setup.saveTip", "Save without testing")
                                 onClicked: root.saveOnly()
                             }
 
                             Button {
                                 visible: root.settingsOpen && !root.needsSetup
-                                text: "Done"
+                                text: root.tr("setup.done", "Done")
                                 bordered: true
                                 foreground: root.popupFg
                                 fontFamily: root.fontFamily
@@ -600,11 +645,10 @@ Panel {
                             }
                         }
 
-                        Text {
+                        PlainText {
                             width: parent.width
                             wrapMode: Text.WordWrap
-                            textFormat: Text.PlainText
-                            text: "Enter tests · Tab next field · Esc leaves a field"
+                            text: root.tr("setup.keys", "Enter tests · Tab next field · Esc leaves a field")
                             color: root.mutedFg
                             font.family: root.fontFamily
                             font.pixelSize: Style.font.caption
@@ -621,10 +665,9 @@ Panel {
                             width: parent.width
                             spacing: Style.space(2)
 
-                            Text {
+                            PlainText {
                                 anchors.horizontalCenter: parent.horizontalCenter
-                                textFormat: Text.PlainText
-                                text: root.queries ? Model.formatPercent(root.queries.percent_blocked, 1) : "—"
+                                text: root.queries ? Model.formatPercent(root.queries.percent_blocked, 1, root.loc) : "—"
                                 color: root.popupFg
                                 font.family: root.fontFamily
                                 // 48px at the default size; follows [font] base-size.
@@ -632,9 +675,9 @@ Panel {
                                 font.bold: true
                             }
 
-                            Text {
+                            PlainText {
                                 anchors.horizontalCenter: parent.horizontalCenter
-                                text: "blocked · last 24h"
+                                text: root.tr("panel.blocked24h", "blocked · last 24h")
                                 color: root.mutedFg
                                 font.family: root.fontFamily
                                 font.pixelSize: Style.font.caption
@@ -652,24 +695,24 @@ Panel {
                                 height: Style.space(36)
                                 bars: root.sparkBars
                                 mutedColor: root.mutedFg
-                                accentColor: Color.accent
+                                accentColor: Commons.Color.accent
                             }
 
                             Item {
                                 width: parent.width
                                 height: sparkStart.implicitHeight
 
-                                Text {
+                                PlainText {
                                     id: sparkStart
                                     anchors.left: parent.left
-                                    text: "24h ago"
+                                    text: root.tr("panel.dayAgo", "24h ago")
                                     color: root.mutedFg
                                     font.family: root.fontFamily
                                     font.pixelSize: Style.font.caption
                                 }
-                                Text {
+                                PlainText {
                                     anchors.right: parent.right
-                                    text: "now"
+                                    text: root.tr("panel.now", "now")
                                     color: root.mutedFg
                                     font.family: root.fontFamily
                                     font.pixelSize: Style.font.caption
@@ -686,12 +729,12 @@ Panel {
 
                             Repeater {
                                 model: [
-                                    { value: root.queries ? Model.compactNumber(root.queries.total) : "—", label: "queries" },
-                                    { value: root.queries ? Model.compactNumber(root.queries.blocked) : "—", label: "blocked" },
-                                    { value: root.queries ? Model.compactNumber(root.queries.unique_domains) : "—", label: "unique domains" },
+                                    { value: root.queries ? Model.compactNumber(root.queries.total, root.loc) : "—", label: root.tr("stat.queries", "queries") },
+                                    { value: root.queries ? Model.compactNumber(root.queries.blocked, root.loc) : "—", label: root.tr("stat.blocked", "blocked") },
+                                    { value: root.queries ? Model.compactNumber(root.queries.unique_domains, root.loc) : "—", label: root.tr("stat.unique", "unique domains") },
                                     { value: root.snapshot && root.snapshot.gravity
-                                        ? Model.compactNumber(root.snapshot.gravity.domains_being_blocked)
-                                        : "—", label: "on blocklists" }
+                                        ? Model.compactNumber(root.snapshot.gravity.domains_being_blocked, root.loc)
+                                        : "—", label: root.tr("stat.blocklists", "on blocklists") }
                                 ]
 
                                 Column {
@@ -699,14 +742,13 @@ Panel {
                                     width: (parent.width - Style.space(16)) / 2
                                     spacing: Style.space(2)
 
-                                    Text {
-                                        textFormat: Text.PlainText
+                                    PlainText {
                                         text: modelData.value
                                         color: root.popupFg
                                         font.family: root.fontFamily
                                         font.pixelSize: Style.font.title
                                     }
-                                    Text {
+                                    PlainText {
                                         text: modelData.label
                                         color: root.mutedFg
                                         font.family: root.fontFamily
@@ -721,12 +763,12 @@ Panel {
                             width: parent.width
                             height: Math.max(pausedLabel.height, resumeBtn.height)
 
-                            Text {
+                            PlainText {
                                 id: pausedLabel
                                 anchors.left: parent.left
                                 anchors.verticalCenter: parent.verticalCenter
-                                textFormat: Text.PlainText
-                                text: "resumes in " + Model.formatCountdown(Math.max(0, Model.remainingSeconds(root.snapshot, root.nowSec) || 0))
+                                text: Model.fill(root.tr("panel.resumesIn", "resumes in %1"),
+                                    Model.formatCountdown(Math.max(0, Model.remainingSeconds(root.snapshot, root.nowSec) || 0), root.loc))
                                 color: root.urgentFg
                                 font.family: root.fontFamily
                                 font.pixelSize: Style.font.body
@@ -736,12 +778,12 @@ Panel {
                                 id: resumeBtn
                                 anchors.right: parent.right
                                 anchors.verticalCenter: parent.verticalCenter
-                                text: "Resume"
+                                text: root.tr("action.resume", "Resume")
                                 bordered: true
                                 hasCursor: root.chipIndex === 0
                                 foreground: root.popupFg
                                 fontFamily: root.fontFamily
-                                tooltipText: "Resume blocking (e)"
+                                tooltipText: root.tr("action.resumeTip", "Resume blocking (e)")
                                 onClicked: root.runChip("resume")
                                 onHovered: function (hot) { root.chipIndex = hot ? 0 : (root.chipIndex === 0 ? -1 : root.chipIndex) }
                             }
@@ -763,8 +805,8 @@ Panel {
                                     foreground: root.popupFg
                                     fontFamily: root.fontFamily
                                     tooltipText: modelData.id === "enable"
-                                        ? "Enable blocking (e)"
-                                        : "Pause blocking for " + modelData.label + " (" + (index + 1) + ")"
+                                        ? root.tr("action.enableTip", "Enable blocking (e)")
+                                        : Model.fill(root.tr("action.pauseTip", "Pause blocking for %1 (%2)"), modelData.label, index + 1)
                                     onClicked: root.runChip(modelData.id)
                                     onHovered: function (hot) { root.chipIndex = hot ? index : (root.chipIndex === index ? -1 : root.chipIndex) }
                                 }
@@ -777,7 +819,7 @@ Panel {
                             spacing: Style.space(4)
 
                             PanelSectionHeader {
-                                text: "last blocked · click to copy"
+                                text: Model.blockedHeading(root.snapshot, root.loc)
                                 foreground: root.popupFg
                                 fontFamily: root.fontFamily
                             }
@@ -792,16 +834,15 @@ Panel {
                                     width: parent.width
                                     height: Math.max(domainText.implicitHeight, allowBtn.implicitHeight)
 
-                                    Text {
+                                    PlainText {
                                         id: domainText
                                         anchors.left: parent.left
                                         anchors.right: allowBtn.left
                                         anchors.rightMargin: Style.space(8)
                                         anchors.verticalCenter: parent.verticalCenter
-                                        textFormat: Text.PlainText
                                         text: blockedRow.modelData
                                         elide: Text.ElideRight
-                                        color: copyArea.containsMouse ? Color.accent : root.popupFg
+                                        color: copyArea.containsMouse ? Commons.Color.accent : root.popupFg
                                         font.family: root.fontFamily
                                         font.pixelSize: Style.font.body
 
@@ -818,7 +859,7 @@ Panel {
                                         id: allowBtn
                                         anchors.right: parent.right
                                         anchors.verticalCenter: parent.verticalCenter
-                                        text: blockedRow.armed ? "Confirm" : "Allow"
+                                        text: blockedRow.armed ? root.tr("action.confirm", "Confirm") : root.tr("action.allow", "Allow")
                                         bordered: true
                                         selected: blockedRow.armed
                                         foreground: blockedRow.armed ? root.urgentFg : root.popupFg
@@ -826,8 +867,8 @@ Panel {
                                         fontSize: Style.font.caption
                                         verticalPadding: Style.space(2)
                                         tooltipText: blockedRow.armed
-                                            ? "Click again to add to the Pi-hole allowlist"
-                                            : "Allow this domain on the Pi-hole"
+                                            ? root.tr("action.confirmTip", "Click again to add to the Pi-hole allowlist")
+                                            : root.tr("action.allowTip", "Allow this domain on the Pi-hole")
                                         onClicked: root.pressAllow(blockedRow.modelData)
                                     }
                                 }
@@ -835,21 +876,19 @@ Panel {
                         }
                     }
 
-                    Text {
+                    PlainText {
                         visible: !!root.notice
                         width: parent.width
                         wrapMode: Text.WordWrap
-                        textFormat: Text.PlainText
                         text: root.notice ? root.notice.text : ""
                         color: root.notice && !root.notice.ok ? root.urgentFg : root.popupFg
                         font.family: root.fontFamily
                         font.pixelSize: Style.font.bodySmall
                     }
 
-                    Text {
+                    PlainText {
                         visible: !root.showSetup && root.freshness !== ""
                         anchors.horizontalCenter: parent.horizontalCenter
-                        textFormat: Text.PlainText
                         text: root.freshness
                         color: root.mutedFg
                         font.family: root.fontFamily

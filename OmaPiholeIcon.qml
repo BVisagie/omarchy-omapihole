@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Shapes
 import qs.Commons
+import qs.Commons as Commons
 
 // The OmaPihole mark, drawn as geometry rather than a font glyph so it tints
 // with the bar, stays crisp in the 16px icon canvas, and can move: the knob
@@ -11,7 +12,7 @@ Item {
     id: root
 
     property real iconSize: Style.bar.iconCanvas
-    property color color: Color.foreground
+    property color color: Commons.Color.foreground
     property bool on: true
     property bool animate: true
 
@@ -38,11 +39,12 @@ Item {
         })
     }
 
+    // CurveRenderer draws anti-aliased curves at the screen's own scale. A
+    // multisampled layer is a texture at logical size, which a fractional
+    // scale (1.25, 1.5) stretches into a blurry, blocky mark.
     Shape {
         anchors.fill: parent
-        antialiasing: true
-        layer.enabled: true
-        layer.samples: 4
+        preferredRendererType: Shape.CurveRenderer
 
         ShapePath {
             fillColor: root.color
@@ -52,7 +54,7 @@ Item {
 
             Behavior on fillColor {
                 enabled: root.animate
-                ColorAnimation { duration: 160 }
+                ColorAnimation { duration: Style.duration(160) }
             }
 
             PathSvg { path: root.scaledPath(root.markPath) }
@@ -72,12 +74,16 @@ Item {
 
         Behavior on x {
             enabled: root.animate
-            NumberAnimation { duration: 200; easing.type: Easing.OutCubic }
+            NumberAnimation {
+                duration: Style.duration(200)
+                easing.type: Easing.Bezier
+                easing.bezierCurve: Style.easeOut
+            }
         }
 
         Behavior on color {
             enabled: root.animate
-            ColorAnimation { duration: 160 }
+            ColorAnimation { duration: Style.duration(160) }
         }
     }
 }
