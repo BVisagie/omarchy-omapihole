@@ -23,6 +23,11 @@ USER_AGENT = "omapihole/0.2"
 CONNECT_TIMEOUT = "3"
 MAX_TIME = "8"
 MAX_SECRET_BYTES = 8192
+# Pi-hole answers are a few kB; anything far larger is not a Pi-hole.
+MAX_RESPONSE_BYTES = 1000000
+MAX_TEXT_CHARS = 200
+MAX_HISTORY_ROWS = 300
+MAX_DOMAINS = 10
 TWO_FA_MSG = "this Pi-hole has 2FA; use an app password, not the web password."
 DEFAULT_PASSWORD_FILE = "~/.config/omapihole/password"
 USAGE = "usage: omapihole status [--bar] | pause <seconds> | resume | allow <domain> | ping"
@@ -76,6 +81,10 @@ def http_exchange(method, url, headers, body, insecure):
         CONNECT_TIMEOUT,
         "--max-time",
         MAX_TIME,
+        "--proto",
+        "=http,https",
+        "--max-filesize",
+        str(MAX_RESPONSE_BYTES),
         "-w",
         "\n%{http_code}",
     ]
@@ -114,6 +123,8 @@ def http_exchange(method, url, headers, body, insecure):
 
     stdout = proc.stdout or ""
     stderr = (proc.stderr or "").strip()
+    if len(stdout) > MAX_RESPONSE_BYTES + 16:
+        return None, "", "response too large"
     body_text, sep, code_s = stdout.rpartition("\n")
     if not sep:
         body_text, code_s = "", stdout.strip()
@@ -137,6 +148,10 @@ def classify_curl(returncode, stderr):
         return "TLS verification failed"
     if returncode == 7:
         return "connection refused"
+    if returncode == 63:
+        return "response too large"
+    if returncode == 1:
+        return "URL must start with http:// or https://"
     if stderr:
         return stderr
     if returncode:
@@ -182,11 +197,21 @@ def parse_allow_insecure(value):
     return s in ("1", "true", "yes")
 
 
+def clean_text(value, limit=MAX_TEXT_CHARS):
+    """Bound text from the network or curl before it reaches the panel."""
+    if value is None:
+        return None
+    text = re.sub(r"[\x00-\x1f\x7f]+", " ", str(value)).strip()
+    if len(text) > limit:
+        text = text[: limit - 1].rstrip() + "…"
+    return text
+
+
 def envelope(state, error=None, ok=None, **fields):
     out = {
         "ok": bool(ok if ok is not None else (state in ("enabled", "paused", "disabled"))),
         "state": state,
-        "error": error,
+        "error": clean_text(error),
         "blocking": False,
         "timer": None,
         "queries": None,
@@ -592,7 +617,7 @@ def map_history(payload):
     if not isinstance(rows, list):
         return None
     out = []
-    for row in rows:
+    for row in rows[-MAX_HISTORY_ROWS:]:
         if not isinstance(row, dict):
             continue
         t = row.get("t", row.get("timestamp"))
@@ -608,11 +633,19 @@ def map_history(payload):
 
 def map_recent_blocked(payload):
     blocked = payload.get("blocked") if isinstance(payload, dict) else None
-    if isinstance(blocked, list):
-        return [str(item) for item in blocked if item]
-    if isinstance(blocked, str) and blocked:
-        return [blocked]
-    return []
+    if isinstance(blocked, str):
+        blocked = [blocked]
+    if not isinstance(blocked, list):
+        return []
+    # Only plain domain names reach the panel and the Allow button.
+    out = []
+    for item in blocked:
+        domain = normalize_domain(item) if isinstance(item, str) else ""
+        if domain and domain not in out:
+            out.append(domain)
+        if len(out) >= MAX_DOMAINS:
+            break
+    return out
 
 
 def collect_status(ctx, full):
@@ -712,7 +745,7 @@ def do_allow(ctx, domain):
     try:
         action = {"ok": True, "message": add_allow(ctx, domain)}
     except FailedError as exc:
-        action = {"ok": False, "message": exc.error}
+        action = {"ok": False, "message": clean_text(exc.error)}
     result = collect_status(ctx, full=True)
     result["action"] = action
     return result
@@ -797,8 +830,13 @@ def run(argv, env):
     args = list(argv[1:])
     if not args or args[0] in ("-h", "--help"):
         raise SystemExit(usage())
-    if not normalize_origin(env.get("OMAPIHOLE_URL", "")):
+    origin = normalize_origin(env.get("OMAPIHOLE_URL", ""))
+    if not origin:
         print_json(envelope("unconfigured", error="empty url"))
+        return 0
+    # A path is kept: a reverse proxy may serve the API under a prefix.
+    if not re.match(r"^https?://[^/?#\s]+(/[^?#\s]*)?$", origin, re.IGNORECASE):
+        print_json(envelope("failed", error="URL must start with http:// or https:// and name a host"))
         return 0
     try:
         result = with_lock(env, lambda: dispatch(argv, env))

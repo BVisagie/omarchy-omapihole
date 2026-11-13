@@ -573,6 +573,72 @@ class HelperTests(unittest.TestCase):
         self.assertTrue(all(c["headers"].get("X-FTL-SID") != "live-sid" for c in http.calls))
         self.assertEqual(self.read_session(), {"origin": "http://pi.hole", "sid": "live-sid"})
 
+    def test_blocked_list_keeps_plain_domains_only(self):
+        http = FakeHttp(
+            [
+                {"status": 200, "json": fixture("auth_valid_passwordless.json")},
+                {"status": 200, "json": fixture("summary.json")},
+                {"status": 200, "json": fixture("blocking_enabled.json")},
+                {"status": 200, "json": fixture("history.json")},
+                {
+                    "status": 200,
+                    "json": {
+                        "blocked": [
+                            '<img src="https://example.invalid/tracker">',
+                            "Ads.Example.com.",
+                            "ads.example.com",
+                            "x" * 300,
+                            42,
+                        ]
+                    },
+                },
+            ]
+        )
+        result = self.run_cmd("status", http=http)
+        self.assertEqual(result["recent_blocked"], ["ads.example.com"])
+
+    def test_error_text_from_pi_hole_is_bounded(self):
+        hint = "<b>bad</b>\n\x1b[31m" + "y" * 500
+        http = FakeHttp(
+            [
+                {"status": 200, "json": fixture("auth_valid_passwordless.json")},
+                {"status": 500, "json": {"error": {"message": hint}}},
+            ]
+        )
+        result = self.run_cmd("status", "--bar", http=http)
+        self.assertEqual(result["state"], "failed")
+        self.assertLessEqual(len(result["error"]), self.mod.MAX_TEXT_CHARS)
+        self.assertTrue(result["error"].startswith("<b>bad</b> [31m"))
+        self.assertNotIn("\n", result["error"])
+
+    def test_history_rows_are_capped(self):
+        rows = [{"t": 1770000000 + i, "total": 1, "blocked": 0} for i in range(1000)]
+        mapped = self.mod.map_history({"history": rows})
+        self.assertEqual(len(mapped), self.mod.MAX_HISTORY_ROWS)
+        self.assertEqual(mapped[-1]["t"], 1770000999)
+
+    def test_non_http_url_is_refused_without_a_request(self):
+        for url in ("file:///etc/passwd", "gopher://pi.hole", "pi.hole"):
+            self.env["OMAPIHOLE_URL"] = url
+            http = FakeHttp([])
+            result = self.run_cmd("status", "--bar", http=http)
+            self.assertEqual(result["state"], "failed", url)
+            self.assertEqual(http.calls, [])
+
+    def test_curl_is_limited_to_http_and_bounded_size(self):
+        seen = {}
+
+        def fake_run(cmd, **kwargs):
+            seen["cmd"] = list(cmd)
+            return mock.Mock(returncode=0, stdout="x" * (self.mod.MAX_RESPONSE_BYTES + 100) + "\n200", stderr="")
+
+        with mock.patch.object(self.mod.subprocess, "run", side_effect=fake_run):
+            status, _text, err = self.mod.http_exchange("GET", "http://pi.hole/api/x", {}, None, False)
+        cmd = seen["cmd"]
+        self.assertEqual(cmd[cmd.index("--proto") + 1], "=http,https")
+        self.assertEqual(cmd[cmd.index("--max-filesize") + 1], str(self.mod.MAX_RESPONSE_BYTES))
+        self.assertEqual((status, err), (None, "response too large"))
+
     def test_usage_error_nonzero(self):
         buf = io.StringIO()
         with mock.patch("sys.stderr", buf):

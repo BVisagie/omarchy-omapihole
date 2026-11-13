@@ -373,3 +373,19 @@ test("normalizeDomain accepts plain names only", () => {
   for (const bad of ["", "ads example.com", "-a.example", "a/b", "*.example.com", "x".repeat(254), "a..b"])
     assert.equal(Model.normalizeDomain(bad), "", bad);
 });
+
+test("markup-shaped text stays literal on its way to every text sink", () => {
+  const markup = '<img src="https://example.invalid/tracker">';
+  const failed = { state: "failed", error: markup, fetched_at: 1 };
+  assert.equal(Model.tooltipText(failed, { url: "http://pi.hole" }, 2), markup);
+  assert.equal(Model.sentence(markup), markup);
+  const enabled = {
+    state: "enabled",
+    queries: { total: 1, blocked: 0, percent_blocked: 0 },
+    recent_blocked: [markup],
+    fetched_at: 1
+  };
+  assert.ok(Model.tooltipText(enabled, { url: "http://pi.hole" }, 2).includes("last " + markup));
+  assert.deepEqual(Model.recentBlocked(enabled), [markup]);
+  assert.equal(Model.normalizeDomain(markup), "");
+});
