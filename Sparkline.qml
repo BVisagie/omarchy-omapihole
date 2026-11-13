@@ -1,5 +1,6 @@
 import QtQuick
 import qs.Commons
+import qs.Commons as Commons
 
 // Dual 24h sparkline: muted totals with accent blocked overlay.
 // Values are already bucketed by Model.bucketHistory (groups of three
@@ -8,8 +9,8 @@ Canvas {
     id: root
 
     property var bars: []
-    property color mutedColor: Color.muted
-    property color accentColor: Color.accent
+    property color mutedColor: Commons.Color.muted
+    property color accentColor: Commons.Color.accent
 
     implicitWidth: 200
     implicitHeight: Style.space(36)

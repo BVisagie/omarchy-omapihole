@@ -2,6 +2,7 @@ import QtQuick
 import Quickshell
 import Quickshell.Io
 import qs.Commons
+import qs.Commons as Commons
 import qs.Ui
 import "Model.js" as Model
 
@@ -51,9 +52,9 @@ BarWidget {
     readonly property bool markOn: shownState === "enabled"
     readonly property string colorRole: Model.barColorRole(snapshot, nowSec)
     readonly property color pillColor: {
-        if (colorRole === "urgent") return root.bar ? root.bar.urgent : Color.urgent
-        if (colorRole === "muted") return Color.muted
-        return root.bar ? root.bar.barForeground : Color.foreground
+        if (colorRole === "urgent") return root.bar ? root.bar.urgent : Commons.Color.urgent
+        if (colorRole === "muted") return Commons.Color.muted
+        return root.bar ? root.bar.barForeground : Commons.Color.foreground
     }
     readonly property string tooltipBody: Model.tooltipText(snapshot, root.settings, nowSec)
     readonly property bool stale: Model.isStale(snapshot)
@@ -135,7 +136,7 @@ BarWidget {
     // Only the first instance polls; every result is handed to the others so
     // the bars agree and the Pi-hole is not polled once per monitor.
     function peers() {
-        if (!root.bar || typeof root.bar.moduleWidgets !== "function") return []
+        if (!root.bar) return []
         var items = root.bar.moduleWidgets(root.moduleName) || []
         var out = []
         for (var i = 0; i < items.length; i++) {
@@ -145,7 +146,7 @@ BarWidget {
     }
 
     function isPrimary() {
-        if (!root.bar || typeof root.bar.moduleWidgets !== "function") return true
+        if (!root.bar) return true
         var items = root.bar.moduleWidgets(root.moduleName) || []
         if (items.length === 0 || items.indexOf(root) < 0) return true
         return items[0] === root
@@ -181,30 +182,21 @@ BarWidget {
         Util.execArgv(["omarchy-launch-browser", url])
     }
 
-    function persistSetting(key, value, asJson) {
-        if (!root.bar || typeof root.bar.run !== "function") return
-        if (typeof key !== "string" || !/^[A-Za-z][A-Za-z0-9]*$/.test(key)) return
-        var quote = (root.bar && typeof root.bar.shellQuote === "function")
-            ? root.bar.shellQuote
-            : ((typeof Util !== "undefined" && Util.shellQuote)
-                ? Util.shellQuote
-                : function (v) { return "'" + String(v || "").replace(/'/g, "'\\''") + "'" })
-        var quotedId = quote("bvisagie.omapihole")
-        var quotedValue = quote(String(value))
-        var cmd = "omarchy bar set " + quotedId + " " + key + " " + quotedValue
-        if (asJson) cmd += " --json"
-        root.bar.run(cmd)
-    }
-
+    // One write of the whole entry: updateEntryInline replaces it, so the
+    // fields the setup form does not edit (barMetric, ...) are carried over.
     function persistSetup(fields) {
-        if (!fields) return
-        if (fields.url !== undefined) persistSetting("url", Model.apiOrigin(fields.url), false)
-        if (fields.passwordFile !== undefined) persistSetting("passwordFile", String(fields.passwordFile), false)
-        if (fields.dashboardUrl !== undefined) persistSetting("dashboardUrl", String(fields.dashboardUrl), false)
-        if (fields.allowInsecure !== undefined)
-            persistSetting("allowInsecure", fields.allowInsecure ? "true" : "false", true)
-        if (fields.refreshSeconds !== undefined)
-            persistSetting("refreshSeconds", String(Model.refreshSeconds(fields.refreshSeconds)), true)
+        if (!fields || !root.bar || !root.bar.shell
+            || typeof root.bar.shell.updateEntryInline !== "function") return
+        var entry = {}
+        var key
+        var current = root.settings || {}
+        for (key in current) entry[key] = current[key]
+        if (fields.url !== undefined) entry.url = Model.apiOrigin(fields.url)
+        if (fields.passwordFile !== undefined) entry.passwordFile = String(fields.passwordFile)
+        if (fields.dashboardUrl !== undefined) entry.dashboardUrl = String(fields.dashboardUrl)
+        if (fields.allowInsecure !== undefined) entry.allowInsecure = fields.allowInsecure === true
+        if (fields.refreshSeconds !== undefined) entry.refreshSeconds = Model.refreshSeconds(fields.refreshSeconds)
+        root.bar.shell.updateEntryInline(root.moduleName, entry)
     }
 
     function helperEnv(action) {
@@ -445,9 +437,8 @@ BarWidget {
                 animate: !root.bar || root.bar.foregroundAnimationEnabled
             }
 
-            Text {
+            PlainText {
                 visible: root.pillLabel !== ""
-                textFormat: Text.PlainText
                 text: root.pillLabel
                 color: root.pillColor
                 font.family: button.fontFamily
@@ -458,7 +449,7 @@ BarWidget {
 
                 Behavior on color {
                     enabled: !root.bar || root.bar.foregroundAnimationEnabled
-                    ColorAnimation { duration: 160 }
+                    ColorAnimation { duration: Style.duration(160) }
                 }
             }
         }

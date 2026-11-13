@@ -16,7 +16,7 @@ Not a dashboard. A shield in the bar, a pause in the panel.
 - Pause for 30 seconds, 5 minutes, 15 minutes, or an hour without leaving the current window, or from a keybinding.
 - Glance at the last 24 hours’ block rate and the last three blocked domains. Click a domain to copy it, or allow it after a confirming second click.
 
-Pi-hole v6 only. One instance. App password in a mode-600 file, never in `shell.json`.
+Requires Omarchy 4.5 or newer and Pi-hole v6. One instance. App password in a mode-600 file, never in `shell.json`.
 
 ## Install
 

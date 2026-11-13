@@ -1,5 +1,6 @@
 import QtQuick
 import qs.Commons
+import qs.Commons as Commons
 import qs.Ui
 import "Model.js" as Model
 import "PopupColors.js" as PopupColors
@@ -45,13 +46,13 @@ Panel {
         return (stale ? "Last data " : "Updated ") + Model.formatAge(dataAge)
     }
     // The transparent bar adapts its text to the wallpaper; the popup has
-    // its own palette. Older shells use the foundational palette instead.
-    readonly property color popupFg: Color.popups ? Color.popups.text : Color.foreground
-    readonly property color popupBg: Color.popups ? Color.popups.background : Color.background
+    // its own palette.
+    readonly property color popupFg: Commons.Color.popups.text
+    readonly property color popupBg: Commons.Color.popups.background
     // Keep theme-muted text when readable; otherwise use popup text without
     // changing its alpha. Contrast is measured against the popup's base RGB.
-    readonly property color mutedFg: PopupColors.readableMuted(Color.muted, root.popupFg, root.popupBg)
-    readonly property color urgentFg: root.bar ? root.bar.urgent : Color.urgent
+    readonly property color mutedFg: PopupColors.readableMuted(Commons.Color.muted, root.popupFg, root.popupBg)
+    readonly property color urgentFg: root.bar ? root.bar.urgent : Commons.Color.urgent
     readonly property string fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
     readonly property bool holeOpen: shownState === "paused" || shownState === "disabled"
 
@@ -113,29 +114,14 @@ Panel {
     }
 
     function switchPanel(direction) {
-        if (root.bar && typeof root.bar.switchPanelFrom === "function")
-            return root.bar.switchPanelFrom(root.barIdentity, direction)
-        return false
+        return root.bar ? root.bar.switchPanelFrom(root.barIdentity, direction) : false
     }
 
-    // The host Bar exposes a writable property, but the PluginBarApi facade
-    // third-party widgets actually get exposes it read-only alongside a setter.
-    // Prefer the setter, and never let a read-only bar throw: this runs inside
-    // open()/close(), and a throw here aborts them before the panel controller
-    // is touched, leaving the panel stuck open and holding keyboard focus.
+    // The plugin bar facade exposes the flag read-only beside this setter.
+    // Writing the property would throw inside open()/close() and leave the
+    // panel stuck open, so always go through the setter.
     function setCenterHoverRevealSuppressed(value) {
-        if (!root.bar) return
-        if (typeof root.bar.setCenterHoverRevealSuppressed === "function") {
-            root.bar.setCenterHoverRevealSuppressed(value)
-            return
-        }
-        if ("centerHoverRevealSuppressed" in root.bar) {
-            try {
-                root.bar.centerHoverRevealSuppressed = value
-            } catch (e) {
-                // Read-only on this bar. The suppression is cosmetic, so skip it.
-            }
-        }
+        if (root.bar) root.bar.setCenterHoverRevealSuppressed(value)
     }
 
     function loadDrafts() {
@@ -349,11 +335,10 @@ Panel {
                                 anchors.verticalCenter: parent.verticalCenter
                                 color: root.holeOpen
                                     ? root.urgentFg
-                                    : (root.shownState === "enabled" ? Color.accent : root.mutedFg)
+                                    : (root.shownState === "enabled" ? Commons.Color.accent : root.mutedFg)
                             }
 
-                            Text {
-                                textFormat: Text.PlainText
+                            PlainText {
                                 text: Model.headerStatus(root.snapshot, root.nowSec, root.apiOrigin)
                                 color: root.holeOpen ? root.urgentFg : root.popupFg
                                 font.family: root.fontFamily
@@ -369,8 +354,7 @@ Panel {
                             anchors.verticalCenter: parent.verticalCenter
                             spacing: Style.space(6)
 
-                            Text {
-                                textFormat: Text.PlainText
+                            PlainText {
                                 text: root.hostName
                                 color: root.mutedFg
                                 font.family: root.fontFamily
@@ -381,7 +365,7 @@ Panel {
                             PanelActionButton {
                                 iconText: ""
                                 foreground: root.popupFg
-                                hoverColor: Color.accent
+                                hoverColor: Commons.Color.accent
                                 fontFamily: root.fontFamily
                                 tooltipText: "Open dashboard (o)"
                                 enabled: !!(root.hostWidget && root.hostWidget.dashboardTarget)
@@ -391,8 +375,8 @@ Panel {
                             PanelActionButton {
                                 visible: !root.needsSetup
                                 iconText: ""
-                                foreground: root.settingsOpen ? Color.accent : root.popupFg
-                                hoverColor: Color.accent
+                                foreground: root.settingsOpen ? Commons.Color.accent : root.popupFg
+                                hoverColor: Commons.Color.accent
                                 fontFamily: root.fontFamily
                                 tooltipText: root.settingsOpen ? "Close settings" : "Settings (s)"
                                 onClicked: root.settingsOpen ? root.closeSettings() : root.openSettings()
@@ -400,11 +384,10 @@ Panel {
                         }
                     }
 
-                    Text {
+                    PlainText {
                         visible: root.awayFromHome && !root.showSetup
                         width: parent.width
                         wrapMode: Text.WordWrap
-                        textFormat: Text.PlainText
                         text: "Your home Pi-hole is unavailable from this network."
                             + (root.dataAge !== null && root.hasNumbers
                                 ? " Showing data from " + Model.formatAge(root.dataAge) + "."
@@ -414,11 +397,10 @@ Panel {
                         font.pixelSize: Style.font.bodySmall
                     }
 
-                    Text {
+                    PlainText {
                         visible: !!(root.snapshot && root.snapshot.error) && !root.showSetup && !root.awayFromHome
                         width: parent.width
                         wrapMode: Text.WordWrap
-                        textFormat: Text.PlainText
                         text: root.snapshot && root.snapshot.error ? Model.sentence(root.snapshot.error) : ""
                         color: root.mutedFg
                         font.family: root.fontFamily
@@ -452,11 +434,10 @@ Panel {
                                     "3. Enter the API URL, then Test connection."
                                 ]
 
-                                Text {
+                                PlainText {
                                     required property string modelData
                                     width: parent.width
                                     wrapMode: Text.WordWrap
-                                    textFormat: Text.PlainText
                                     text: modelData
                                     color: root.popupFg
                                     font.family: root.fontFamily
@@ -464,11 +445,10 @@ Panel {
                                 }
                             }
 
-                            Text {
+                            PlainText {
                                 width: parent.width
                                 topPadding: Style.space(4)
                                 wrapMode: Text.WordWrap
-                                textFormat: Text.PlainText
                                 text: "A Pi-hole has one app password, and generating a new one signs out everything using the old one. If another integration already has it, reuse it. The web password with 2FA will not work."
                                 color: root.mutedFg
                                 font.family: root.fontFamily
@@ -476,18 +456,17 @@ Panel {
                             }
                         }
 
-                        Text {
+                        PlainText {
                             visible: root.shownState === "auth" && !!(root.snapshot && root.snapshot.error)
                             width: parent.width
                             wrapMode: Text.WordWrap
-                            textFormat: Text.PlainText
                             text: root.snapshot && root.snapshot.error ? Model.sentence(root.snapshot.error) : ""
                             color: root.urgentFg
                             font.family: root.fontFamily
                             font.pixelSize: Style.font.bodySmall
                         }
 
-                        Text {
+                        PlainText {
                             text: "URL"
                             color: root.mutedFg
                             font.family: root.fontFamily
@@ -507,7 +486,7 @@ Panel {
                             KeyNavigation.backtab: dashboardField
                         }
 
-                        Text {
+                        PlainText {
                             text: "Password file"
                             color: root.mutedFg
                             font.family: root.fontFamily
@@ -527,7 +506,7 @@ Panel {
                             KeyNavigation.backtab: urlField
                         }
 
-                        Text {
+                        PlainText {
                             text: "Dashboard URL (optional)"
                             color: root.mutedFg
                             font.family: root.fontFamily
@@ -556,11 +535,10 @@ Panel {
                             onClicked: root.draftAllowInsecure = !root.draftAllowInsecure
                         }
 
-                        Text {
+                        PlainText {
                             visible: root.testMessage !== ""
                             width: parent.width
                             wrapMode: Text.WordWrap
-                            textFormat: Text.PlainText
                             text: root.testMessage
                             color: root.testOk ? root.popupFg : root.urgentFg
                             font.family: root.fontFamily
@@ -600,10 +578,9 @@ Panel {
                             }
                         }
 
-                        Text {
+                        PlainText {
                             width: parent.width
                             wrapMode: Text.WordWrap
-                            textFormat: Text.PlainText
                             text: "Enter tests · Tab next field · Esc leaves a field"
                             color: root.mutedFg
                             font.family: root.fontFamily
@@ -621,9 +598,8 @@ Panel {
                             width: parent.width
                             spacing: Style.space(2)
 
-                            Text {
+                            PlainText {
                                 anchors.horizontalCenter: parent.horizontalCenter
-                                textFormat: Text.PlainText
                                 text: root.queries ? Model.formatPercent(root.queries.percent_blocked, 1) : "—"
                                 color: root.popupFg
                                 font.family: root.fontFamily
@@ -632,7 +608,7 @@ Panel {
                                 font.bold: true
                             }
 
-                            Text {
+                            PlainText {
                                 anchors.horizontalCenter: parent.horizontalCenter
                                 text: "blocked · last 24h"
                                 color: root.mutedFg
@@ -652,14 +628,14 @@ Panel {
                                 height: Style.space(36)
                                 bars: root.sparkBars
                                 mutedColor: root.mutedFg
-                                accentColor: Color.accent
+                                accentColor: Commons.Color.accent
                             }
 
                             Item {
                                 width: parent.width
                                 height: sparkStart.implicitHeight
 
-                                Text {
+                                PlainText {
                                     id: sparkStart
                                     anchors.left: parent.left
                                     text: "24h ago"
@@ -667,7 +643,7 @@ Panel {
                                     font.family: root.fontFamily
                                     font.pixelSize: Style.font.caption
                                 }
-                                Text {
+                                PlainText {
                                     anchors.right: parent.right
                                     text: "now"
                                     color: root.mutedFg
@@ -699,14 +675,13 @@ Panel {
                                     width: (parent.width - Style.space(16)) / 2
                                     spacing: Style.space(2)
 
-                                    Text {
-                                        textFormat: Text.PlainText
+                                    PlainText {
                                         text: modelData.value
                                         color: root.popupFg
                                         font.family: root.fontFamily
                                         font.pixelSize: Style.font.title
                                     }
-                                    Text {
+                                    PlainText {
                                         text: modelData.label
                                         color: root.mutedFg
                                         font.family: root.fontFamily
@@ -721,11 +696,10 @@ Panel {
                             width: parent.width
                             height: Math.max(pausedLabel.height, resumeBtn.height)
 
-                            Text {
+                            PlainText {
                                 id: pausedLabel
                                 anchors.left: parent.left
                                 anchors.verticalCenter: parent.verticalCenter
-                                textFormat: Text.PlainText
                                 text: "resumes in " + Model.formatCountdown(Math.max(0, Model.remainingSeconds(root.snapshot, root.nowSec) || 0))
                                 color: root.urgentFg
                                 font.family: root.fontFamily
@@ -792,16 +766,15 @@ Panel {
                                     width: parent.width
                                     height: Math.max(domainText.implicitHeight, allowBtn.implicitHeight)
 
-                                    Text {
+                                    PlainText {
                                         id: domainText
                                         anchors.left: parent.left
                                         anchors.right: allowBtn.left
                                         anchors.rightMargin: Style.space(8)
                                         anchors.verticalCenter: parent.verticalCenter
-                                        textFormat: Text.PlainText
                                         text: blockedRow.modelData
                                         elide: Text.ElideRight
-                                        color: copyArea.containsMouse ? Color.accent : root.popupFg
+                                        color: copyArea.containsMouse ? Commons.Color.accent : root.popupFg
                                         font.family: root.fontFamily
                                         font.pixelSize: Style.font.body
 
@@ -835,21 +808,19 @@ Panel {
                         }
                     }
 
-                    Text {
+                    PlainText {
                         visible: !!root.notice
                         width: parent.width
                         wrapMode: Text.WordWrap
-                        textFormat: Text.PlainText
                         text: root.notice ? root.notice.text : ""
                         color: root.notice && !root.notice.ok ? root.urgentFg : root.popupFg
                         font.family: root.fontFamily
                         font.pixelSize: Style.font.bodySmall
                     }
 
-                    Text {
+                    PlainText {
                         visible: !root.showSetup && root.freshness !== ""
                         anchors.horizontalCenter: parent.horizontalCenter
-                        textFormat: Text.PlainText
                         text: root.freshness
                         color: root.mutedFg
                         font.family: root.fontFamily
