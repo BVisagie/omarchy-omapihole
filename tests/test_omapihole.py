@@ -840,6 +840,45 @@ class HelperTests(unittest.TestCase):
         self.assertTrue(result["rate_limited"])
         self.assertEqual(len(http.calls), 4)
 
+    def test_huge_json_integers_fall_back(self):
+        big = 10**400
+        self.assertEqual(self.mod.whole(big), 0)
+        self.assertEqual(self.mod.map_queries({"queries": {"total": big}})["total"], 0)
+
+    def test_a_429_without_json_is_still_a_rate_limit(self):
+        self.mod.http_exchange = lambda *a, **k: (429, "<html>Too Many Requests</html>", None)
+        buf = io.StringIO()
+        with mock.patch("sys.stdout", buf):
+            self.mod.run(["omapihole", "status", "--bar"], self.env)
+        result = json.loads(buf.getvalue())
+        self.assertEqual(result["state"], "failed")
+        self.assertTrue(result["rate_limited"])
+
+    def test_allow_rate_limited_stops_instead_of_reporting_a_refusal(self):
+        http = FakeHttp(
+            [
+                {"status": 200, "json": fixture("auth_valid_passwordless.json")},
+                {"status": 429, "json": fixture("auth_429_rate_limit.json")},
+            ]
+        )
+        result = self.run_cmd("allow", "ads.example.com", http=http)
+        self.assertEqual(result["state"], "failed")
+        self.assertTrue(result["rate_limited"])
+        self.assertEqual(len(http.calls), 2)
+
+    def test_a_missing_ca_file_is_ignored_when_verification_is_off(self):
+        self.env["OMAPIHOLE_CA_FILE"] = str(Path(self.tmpdir.name) / "missing.crt")
+        self.env["OMAPIHOLE_ALLOW_INSECURE"] = "1"
+        http = FakeHttp(
+            [
+                {"status": 200, "json": fixture("auth_valid_passwordless.json")},
+                {"status": 200, "json": fixture("summary.json")},
+                {"status": 200, "json": fixture("blocking_enabled.json")},
+            ]
+        )
+        result = self.run_cmd("status", "--bar", http=http)
+        self.assertEqual(result["state"], "enabled")
+
     def test_usage_error_nonzero(self):
         buf = io.StringIO()
         with mock.patch("sys.stderr", buf), self.assertRaises(SystemExit) as raised:

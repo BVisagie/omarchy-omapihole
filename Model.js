@@ -582,7 +582,11 @@ function queueAction(queue, incoming) {
             kept.push(incoming)
             writes = kept
         } else if (!read || READ_ACTIONS[incoming.type] >= READ_ACTIONS[read.type]) {
-            read = incoming
+            // A manual refresh merged with a timed one stays manual, so the
+            // 429 backoff never swallows what the user asked for.
+            read = read && read.timed !== true && incoming.timed === true ? { type: incoming.type } : incoming
+        } else if (read.timed === true && incoming.timed !== true) {
+            read = { type: read.type }
         }
     }
     return read ? writes.concat([read]) : writes

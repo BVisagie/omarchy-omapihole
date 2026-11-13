@@ -311,6 +311,13 @@ def request(ctx, method, path, body=None, sid=None):
     status, text, terr = http_exchange(method, url, headers, body, ctx["insecure"], ctx.get("ca_file"))
     if terr:
         raise OfflineError(terr)
+    if status == 429:
+        # A proxy in front of the Pi-hole may answer 429 with HTML.
+        try:
+            payload = parse_json_body(text) if text else {}
+        except FailedError:
+            payload = {}
+        raise rate_limited(payload)
     payload = parse_json_body(text) if text else {}
     return status, payload
 
@@ -565,7 +572,7 @@ def whole(value, default=0, limit=10**15):
         return default
     try:
         n = float(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return default
     if not math.isfinite(n) or n < 0 or n > limit:
         return default
@@ -603,7 +610,7 @@ def map_queries(payload):
             return 0
         try:
             n = float(value)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             return 0
         return n if math.isfinite(n) and abs(n) <= 1e15 else 0
 
@@ -863,6 +870,7 @@ def do_allow(ctx, domain):
     try:
         action = {"ok": True, "code": add_allow(ctx, domain), "domain": domain, "message": None}
     except FailedError as exc:
+        stop_on(exc)
         action = {"ok": False, "code": "failed", "domain": domain, "message": clean_text(exc.error)}
     result = collect_status(ctx, full=True)
     result["action"] = action
@@ -910,7 +918,8 @@ def dispatch(argv, env):
     _, pw_err = read_password_file(ctx["password_file"])
     if pw_err:
         raise AuthError(pw_err)
-    if ctx["ca_file"] and not os.path.isfile(ctx["ca_file"]):
+    # curl ignores the CA file when verification is off, so only check it then.
+    if ctx["ca_file"] and not ctx["insecure"] and not os.path.isfile(ctx["ca_file"]):
         raise FailedError("no CA certificate file at %s" % ctx["ca_file"])
 
     if command == "status":

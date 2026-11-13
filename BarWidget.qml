@@ -166,15 +166,22 @@ BarWidget {
     function shareSnapshot() {
         var others = peers()
         for (var i = 0; i < others.length; i++) {
-            if (typeof others[i].adoptSnapshot === "function") others[i].adoptSnapshot(root.snapshot)
+            if (typeof others[i].adoptSnapshot === "function")
+                others[i].adoptSnapshot(root.snapshot, { seconds: root.backoffSeconds, until: root.backoffUntil })
         }
     }
 
-    function adoptSnapshot(next) {
+    // Peers on other monitors take the snapshot and the 429 backoff, so an
+    // open panel elsewhere does not keep polling into the limit.
+    function adoptSnapshot(next, backoff) {
         // A peer may still be finishing a request to the previous host.
         if (!next || !configured || next.origin !== apiOrigin) return
         snapshot = next
         zeroPollSent = false
+        if (backoff) {
+            backoffSeconds = backoff.seconds
+            backoffUntil = backoff.until
+        }
     }
 
     function pingWith(fields) {
@@ -299,7 +306,7 @@ BarWidget {
         snapshot = next
         if (result.ok === true) zeroPollSent = false
         shareSnapshot()
-        if ((inFlight === "pause" || inFlight === "resume") && opened)
+        if ((inFlight === "pause" || inFlight === "resume") && opened && result.ok === true)
             pendingActions = Model.queueAction(pendingActions, { type: "full" })
     }
 

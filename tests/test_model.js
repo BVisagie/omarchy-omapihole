@@ -466,3 +466,15 @@ test("right click opens the dashboard unless set to pause", () => {
   assert.equal(Model.coerceSettings({ rightClick: "bogus" }).rightClick, "dashboard");
   assert.equal(Model.coerceSettings({ caFile: "  ~/ca.pem " }).caFile, "~/ca.pem");
 });
+
+test("merging a manual and a timed read keeps it manual", () => {
+  let q = Model.queueAction([], { type: "bar" });
+  q = Model.queueAction(q, { type: "full", timed: true });
+  assert.deepEqual(q, [{ type: "full" }]);
+  q = Model.queueAction([], { type: "full", timed: true });
+  q = Model.queueAction(q, { type: "bar" });
+  assert.deepEqual(q, [{ type: "full" }]);
+  q = Model.queueAction([], { type: "bar", timed: true });
+  q = Model.queueAction(q, { type: "full", timed: true });
+  assert.deepEqual(q, [{ type: "full", timed: true }]);
+});
