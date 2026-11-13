@@ -320,24 +320,56 @@ def read_password_file(path):
     return data.decode("utf-8", "replace").rstrip(" \t\r\n"), None
 
 
-def load_sid(ctx):
-    path = ctx["session_file"]
+def read_session(ctx):
+    """Return (origin, sid) from the session file, or None.
+
+    A file without an origin (written before sessions were keyed to their
+    host) returns None: nothing says which Pi-hole it belongs to.
+    """
     try:
-        data, _st = _read_owned_regular_file(path)
+        data, _st = _read_owned_regular_file(ctx["session_file"])
     except OSError:
-        return ""
-    return data.decode("utf-8", "replace").strip()
-
-
-def drop_sid(ctx):
-    path = ctx["session_file"]
+        return None
     try:
-        os.remove(path)
+        record = json.loads(data.decode("utf-8", "replace"))
+    except ValueError:
+        return None
+    if not isinstance(record, dict):
+        return None
+    origin = record.get("origin")
+    sid = record.get("sid")
+    if isinstance(origin, str) and isinstance(sid, str) and sid:
+        return origin, sid
+    return None
+
+
+def load_sid(ctx):
+    if ctx.get("ephemeral"):
+        return ctx.get("sid") or ""
+    record = read_session(ctx)
+    if record and record[0] == ctx["origin"]:
+        return record[1]
+    return ""
+
+
+def remove_session_file(ctx):
+    try:
+        os.remove(ctx["session_file"])
     except OSError:
         pass
 
 
+def drop_sid(ctx):
+    if ctx.get("ephemeral"):
+        ctx["sid"] = ""
+        return
+    remove_session_file(ctx)
+
+
 def save_sid(ctx, sid):
+    if ctx.get("ephemeral"):
+        ctx["sid"] = sid or ""
+        return
     if not sid:
         drop_sid(ctx)
         return
@@ -345,7 +377,7 @@ def save_sid(ctx, sid):
     os.makedirs(directory, mode=0o700, exist_ok=True)
     fd, tmp = tempfile.mkstemp(prefix="session.", dir=directory)
     try:
-        os.write(fd, (sid + "\n").encode("utf-8"))
+        os.write(fd, (dumps({"origin": ctx["origin"], "sid": sid}) + "\n").encode("utf-8"))
         os.fchmod(fd, 0o600)
         os.close(fd)
         fd = -1
@@ -356,6 +388,19 @@ def save_sid(ctx, sid):
             os.close(fd)
         if tmp and os.path.exists(tmp):
             os.remove(tmp)
+
+
+def retire_foreign_session(ctx):
+    """Log out a session saved for another host there; never send it here."""
+    record = read_session(ctx)
+    if record and record[0] == ctx["origin"]:
+        return
+    if record:
+        try:
+            request(dict(ctx, origin=record[0]), "DELETE", "/api/auth", sid=record[1])
+        except HelperError:
+            pass
+    remove_session_file(ctx)
 
 
 def replace_sid(ctx, new_sid):
@@ -447,6 +492,8 @@ def authenticate(ctx, held_sid=""):
 def ensure_session(ctx):
     if ctx.get("authed"):
         return
+    if not ctx.get("ephemeral"):
+        retire_foreign_session(ctx)
     if not load_sid(ctx):
         authenticate(ctx)
     ctx["authed"] = True
@@ -601,10 +648,23 @@ def collect_status(ctx, full):
 
 
 def collect_ping(ctx):
-    # Setup must verify the same endpoints the widget uses. Reporting a
-    # successful connection after only the summary endpoint works can leave a
-    # user with a widget that cannot show or control blocking state.
-    return collect_status(ctx, full=False)
+    # Setup tests draft settings, possibly for another host. Log in with them
+    # on a throwaway session, so a stored session can neither leak to that
+    # host nor hide a wrong password, and the stored file is left alone.
+    # It checks the same endpoints the widget uses: a connection that only
+    # reaches the summary would leave a widget that cannot control blocking.
+    ctx["ephemeral"] = True
+    ctx["sid"] = ""
+    try:
+        authenticate(ctx)
+        ctx["authed"] = True
+        return collect_status(ctx, full=False)
+    finally:
+        if ctx.get("sid"):
+            try:
+                request(ctx, "DELETE", "/api/auth", sid=ctx["sid"])
+            except HelperError:
+                pass
 
 
 def do_pause(ctx, seconds):

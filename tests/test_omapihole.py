@@ -106,6 +106,18 @@ class HelperTests(unittest.TestCase):
         self.password_path.write_text(text + "\n", encoding="utf-8")
         os.chmod(self.password_path, mode)
 
+    @property
+    def session_path(self):
+        return self.state / "omapihole" / "session"
+
+    def write_session(self, origin, sid):
+        self.session_path.parent.mkdir(parents=True, exist_ok=True)
+        self.session_path.write_text(json.dumps({"origin": origin, "sid": sid}) + "\n", encoding="utf-8")
+        os.chmod(self.session_path, 0o600)
+
+    def read_session(self):
+        return json.loads(self.session_path.read_text(encoding="utf-8"))
+
     def run_cmd(self, *argv, http=None):
         if http is not None:
             self.mod.http_exchange = http
@@ -244,10 +256,7 @@ class HelperTests(unittest.TestCase):
 
     def test_401_reauth_once_then_retry(self):
         self.write_password()
-        sid_path = self.state / "omapihole" / "session"
-        sid_path.parent.mkdir(parents=True, exist_ok=True)
-        sid_path.write_text("stale-sid\n", encoding="utf-8")
-        os.chmod(sid_path, 0o600)
+        self.write_session("http://pi.hole", "stale-sid")
         http = FakeHttp(
             [
                 {"status": 401, "json": fixture("auth_401_stale_sid.json")},
@@ -271,9 +280,7 @@ class HelperTests(unittest.TestCase):
 
     def test_401_retry_exhausted_is_auth(self):
         self.write_password()
-        sid_path = self.state / "omapihole" / "session"
-        sid_path.parent.mkdir(parents=True, exist_ok=True)
-        sid_path.write_text("stale-sid\n", encoding="utf-8")
+        self.write_session("http://pi.hole", "stale-sid")
         http = FakeHttp(
             [
                 {"status": 401, "json": fixture("auth_401_stale_sid.json")},
@@ -288,9 +295,7 @@ class HelperTests(unittest.TestCase):
 
     def test_429_seats_no_reauth(self):
         self.write_password()
-        sid_path = self.state / "omapihole" / "session"
-        sid_path.parent.mkdir(parents=True, exist_ok=True)
-        sid_path.write_text("live-sid\n", encoding="utf-8")
+        self.write_session("http://pi.hole", "live-sid")
         http = FakeHttp(
             [
                 {"status": 429, "json": fixture("auth_429_seats.json")},
@@ -499,6 +504,74 @@ class HelperTests(unittest.TestCase):
         self.assertEqual((status, text, err), (200, '{"ok":1}', None))
         self.assertNotIn("secret-sid", " ".join(seen["cmd"]))
         self.assertIn("X-FTL-SID: secret-sid", seen["headers"])
+
+    def test_session_for_another_host_is_logged_out_there_not_sent_here(self):
+        self.write_session("http://old.lan", "old-sid")
+        http = FakeHttp(
+            [
+                {"status": 200, "json": {}, "expect": {"method": "DELETE", "path": "/api/auth"}},
+                {"status": 200, "json": fixture("auth_valid_passwordless.json"), "expect": {"has_sid": False}},
+                {"status": 200, "json": fixture("summary.json")},
+                {"status": 200, "json": fixture("blocking_enabled.json")},
+            ]
+        )
+        result = self.run_cmd("status", "--bar", http=http)
+        self.assertEqual(result["state"], "enabled")
+        self.assertEqual(http.calls[0]["url"], "http://old.lan/api/auth")
+        self.assertEqual(http.calls[0]["headers"].get("X-FTL-SID"), "old-sid")
+        for call in http.calls[1:]:
+            self.assertTrue(call["url"].startswith("http://pi.hole/"), call["url"])
+            self.assertNotEqual(call["headers"].get("X-FTL-SID"), "old-sid")
+        self.assertFalse(self.session_path.exists())
+
+    def test_session_without_origin_is_never_sent(self):
+        self.session_path.parent.mkdir(parents=True, exist_ok=True)
+        self.session_path.write_text("legacy-sid\n", encoding="utf-8")
+        os.chmod(self.session_path, 0o600)
+        self.write_password()
+        http = FakeHttp(
+            [
+                {"status": 401, "json": fixture("auth_required.json"), "expect": {"has_sid": False}},
+                {"status": 200, "json": fixture("auth_login_ok.json")},
+                {"status": 200, "json": fixture("summary.json")},
+                {"status": 200, "json": fixture("blocking_enabled.json")},
+            ]
+        )
+        result = self.run_cmd("status", "--bar", http=http)
+        self.assertEqual(result["state"], "enabled")
+        self.assertTrue(all(c["headers"].get("X-FTL-SID") != "legacy-sid" for c in http.calls))
+        self.assertEqual(self.read_session(), {"origin": "http://pi.hole", "sid": "vFA+EP4MQ5JJvJg+3Q2Jnw="})
+
+    def ping_script(self):
+        return [
+            {"status": 401, "json": fixture("auth_required.json"), "expect": {"method": "GET", "has_sid": False}},
+            {"status": 200, "json": fixture("auth_login_ok.json"), "expect": {"method": "POST"}},
+            {"status": 200, "json": fixture("summary.json")},
+            {"status": 200, "json": fixture("blocking_enabled.json")},
+            {"status": 204, "json": None, "expect": {"method": "DELETE", "path": "/api/auth"}},
+        ]
+
+    def test_ping_logs_in_on_a_throwaway_session(self):
+        # A valid stored session must not let a wrong password file pass.
+        self.write_password()
+        self.write_session("http://pi.hole", "live-sid")
+        http = FakeHttp(self.ping_script())
+        result = self.run_cmd("ping", http=http)
+        self.assertTrue(result["ok"])
+        self.assertTrue(all(c["headers"].get("X-FTL-SID") != "live-sid" for c in http.calls))
+        self.assertEqual(http.calls[-1]["headers"].get("X-FTL-SID"), "vFA+EP4MQ5JJvJg+3Q2Jnw=")
+        self.assertEqual(self.read_session(), {"origin": "http://pi.hole", "sid": "live-sid"})
+
+    def test_ping_to_a_draft_host_leaves_the_stored_session_alone(self):
+        self.write_password()
+        self.write_session("http://pi.hole", "live-sid")
+        self.env["OMAPIHOLE_URL"] = "http://typo.example"
+        http = FakeHttp(self.ping_script())
+        result = self.run_cmd("ping", http=http)
+        self.assertTrue(result["ok"])
+        self.assertTrue(all(c["url"].startswith("http://typo.example/") for c in http.calls))
+        self.assertTrue(all(c["headers"].get("X-FTL-SID") != "live-sid" for c in http.calls))
+        self.assertEqual(self.read_session(), {"origin": "http://pi.hole", "sid": "live-sid"})
 
     def test_usage_error_nonzero(self):
         buf = io.StringIO()
