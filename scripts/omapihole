@@ -18,6 +18,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.parse
 
 USER_AGENT = "omapihole/0.2"
 CONNECT_TIMEOUT = "3"
@@ -220,6 +221,7 @@ def envelope(state, error=None, ok=None, **fields):
         "gravity": None,
         "history": None,
         "recent_blocked": [],
+        "recent_scope": None,
         "fetched_at": now_unix(),
     }
     if state == "enabled":
@@ -637,11 +639,22 @@ def map_recent_blocked(payload):
     blocked = payload.get("blocked") if isinstance(payload, dict) else None
     if isinstance(blocked, str):
         blocked = [blocked]
-    if not isinstance(blocked, list):
+    return plain_domains(blocked)
+
+
+def map_blocked_queries(payload):
+    rows = payload.get("queries") if isinstance(payload, dict) else None
+    if not isinstance(rows, list):
+        return []
+    return plain_domains([row.get("domain") for row in rows if isinstance(row, dict)])
+
+
+def plain_domains(items):
+    if not isinstance(items, list):
         return []
     # Only plain domain names reach the panel and the Allow button.
     out = []
-    for item in blocked:
+    for item in items:
         domain = normalize_domain(item) if isinstance(item, str) else ""
         if domain and domain not in out:
             out.append(domain)
@@ -655,7 +668,7 @@ def collect_status(ctx, full):
     blocking = api(ctx, "GET", "/api/dns/blocking")
     state, is_blocking, timer = map_blocking(blocking)
     history = None
-    recent = []
+    recent, scope = [], None
     if full:
         try:
             history = map_history(api(ctx, "GET", "/api/history"))
@@ -663,12 +676,7 @@ def collect_status(ctx, full):
             raise
         except HelperError:
             history = None
-        try:
-            recent = map_recent_blocked(api(ctx, "GET", "/api/stats/recent_blocked?count=3"))
-        except AuthError:
-            raise
-        except HelperError:
-            recent = []
+        recent, scope = recent_blocks(ctx)
     return envelope(
         state,
         ok=True,
@@ -679,7 +687,39 @@ def collect_status(ctx, full):
         gravity=map_gravity(summary),
         history=history if full else None,
         recent_blocked=recent if full else [],
+        recent_scope=scope if full else None,
     )
+
+
+IP_RE = re.compile(r"^[0-9A-Fa-f:.]{2,45}$")
+
+
+def recent_blocks(ctx):
+    """Blocked domains for this computer, else for the whole network.
+
+    The Pi-hole names the address it sees this computer at. Behind a
+    reverse proxy or NAT that is the proxy, whose own queries are few, so
+    an empty answer falls back to the network-wide list.
+    Returns (domains, "here" | "network" | None).
+    """
+    try:
+        addr = api(ctx, "GET", "/api/info/client").get("remote_addr")
+        if isinstance(addr, str) and IP_RE.match(addr):
+            path = "/api/queries?upstream=blocklist&length=50&client_ip=" + urllib.parse.quote(addr, safe="")
+            here = map_blocked_queries(api(ctx, "GET", path))
+            if here:
+                return here, "here"
+    except AuthError:
+        raise
+    except HelperError:
+        pass
+    try:
+        network = map_recent_blocked(api(ctx, "GET", "/api/stats/recent_blocked?count=10"))
+    except AuthError:
+        raise
+    except HelperError:
+        return [], None
+    return network, "network" if network else None
 
 
 def collect_ping(ctx):

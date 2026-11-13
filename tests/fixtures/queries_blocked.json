@@ -1,0 +1,53 @@
+{
+  "queries": [
+    {
+      "id": 9031,
+      "time": 1770000300.31,
+      "type": "A",
+      "status": "GRAVITY",
+      "dnssec": "UNKNOWN",
+      "domain": "metrics.example.net",
+      "upstream": null,
+      "reply": { "type": "IP", "time": 0.00002 },
+      "client": { "ip": "192.168.1.50", "name": null },
+      "list_id": 3,
+      "ede": { "code": -1, "text": null },
+      "cname": null
+    },
+    {
+      "id": 9030,
+      "time": 1770000300.30,
+      "type": "AAAA",
+      "status": "GRAVITY",
+      "dnssec": "UNKNOWN",
+      "domain": "metrics.example.net",
+      "upstream": null,
+      "reply": { "type": "IP", "time": 0.00002 },
+      "client": { "ip": "192.168.1.50", "name": null },
+      "list_id": 3,
+      "ede": { "code": -1, "text": null },
+      "cname": null
+    },
+    {
+      "id": 9012,
+      "time": 1770000200.12,
+      "type": "A",
+      "status": "REGEX",
+      "dnssec": "UNKNOWN",
+      "domain": "ads.example.org",
+      "upstream": null,
+      "reply": { "type": "IP", "time": 0.00003 },
+      "client": { "ip": "192.168.1.50", "name": null },
+      "list_id": 7,
+      "ede": { "code": -1, "text": null },
+      "cname": null
+    }
+  ],
+  "cursor": 9031,
+  "recordsTotal": 120000,
+  "recordsFiltered": 412,
+  "draw": 0,
+  "earliest_timestamp": 1769913900,
+  "earliest_timestamp_disk": 1767321900.5,
+  "took": 0.004
+}

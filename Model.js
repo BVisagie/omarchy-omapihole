@@ -365,6 +365,13 @@ function bucketHistory(history) {
     return bars
 }
 
+// Whose blocks the panel lists: this computer's when the Pi-hole had any.
+function blockedHeading(snapshot, loc) {
+    return snapshot && snapshot.recent_scope === "here"
+        ? say(loc, "panel.blockedHere", "blocked on this computer · click to copy")
+        : say(loc, "panel.blockedNetwork", "blocked on the network · click to copy")
+}
+
 function recentBlocked(snapshot) {
     var rows = snapshot && snapshot.recent_blocked ? snapshot.recent_blocked : []
     if (!Array.isArray(rows)) return []
@@ -443,8 +450,10 @@ function applySuccessfulSnapshot(incoming, previous) {
     if (prior && prior.origin !== copy.origin) prior = null
     if (prior && (copy.history === null || copy.history === undefined)) {
         copy.history = prior.history === undefined ? null : prior.history
-        if (!copy.recent_blocked || copy.recent_blocked.length === 0)
+        if (!copy.recent_blocked || copy.recent_blocked.length === 0) {
             copy.recent_blocked = prior.recent_blocked || []
+            copy.recent_scope = prior.recent_scope === undefined ? null : prior.recent_scope
+        }
     }
     return copy
 }
@@ -458,6 +467,7 @@ function withoutExtras(snapshot) {
     for (key in snapshot) copy[key] = snapshot[key]
     copy.history = null
     copy.recent_blocked = []
+    copy.recent_scope = null
     return copy
 }
 
@@ -600,6 +610,7 @@ if (typeof module !== "undefined") {
         fill: fill,
         bucketHistory: bucketHistory,
         recentBlocked: recentBlocked,
+        blockedHeading: blockedHeading,
         unconfiguredSnapshot: unconfiguredSnapshot,
         parseHelperJson: parseHelperJson,
         mergeSnapshot: mergeSnapshot,

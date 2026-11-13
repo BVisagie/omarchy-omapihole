@@ -420,3 +420,16 @@ test("allow notices are worded from the helper's code", () => {
     "Could not allow a.example: Invalid domain"
   );
 });
+
+test("the blocked list says whose blocks it shows, and keeps that across bar polls", () => {
+  assert.equal(Model.blockedHeading({ recent_scope: "here" }), "blocked on this computer · click to copy");
+  assert.equal(Model.blockedHeading({ recent_scope: "network" }), "blocked on the network · click to copy");
+  const full = Model.applyHelperResult(null, {
+    ok: true, state: "enabled", history: [], recent_blocked: ["a.example"], recent_scope: "here", fetched_at: 1
+  }, "http://pi.hole", "http://pi.hole");
+  const bar = Model.applyHelperResult(full, {
+    ok: true, state: "enabled", history: null, recent_blocked: [], recent_scope: null, fetched_at: 2
+  }, "http://pi.hole", "http://pi.hole");
+  assert.equal(bar.recent_scope, "here");
+  assert.equal(Model.withoutExtras(bar).recent_scope, null);
+});

@@ -184,14 +184,62 @@ class HelperTests(unittest.TestCase):
                 {"status": 200, "json": fixture("summary.json")},
                 {"status": 200, "json": fixture("blocking_enabled.json")},
                 {"status": 200, "json": fixture("history.json")},
-                {"status": 200, "json": fixture("recent_blocked.json")},
+                {"status": 200, "json": fixture("info_client.json"), "expect": {"path": "/api/info/client"}},
+                {"status": 200, "json": fixture("queries_blocked.json")},
             ]
         )
         result = self.run_cmd("status", http=http)
         self.assertEqual(result["state"], "enabled")
         self.assertEqual(len(result["history"]), 6)
         self.assertEqual(result["history"][0]["t"], 1770000000)
+        self.assertEqual(result["recent_blocked"], ["metrics.example.net", "ads.example.org"])
+        self.assertEqual(result["recent_scope"], "here")
+        self.assertTrue(
+            http.calls[-1]["url"].endswith("/api/queries?upstream=blocklist&length=50&client_ip=192.168.1.50")
+        )
+
+    def test_blocks_fall_back_to_the_network_when_none_are_from_here(self):
+        # Behind a proxy the Pi-hole sees the proxy, which sends few queries.
+        http = FakeHttp(
+            [
+                {"status": 200, "json": fixture("auth_valid_passwordless.json")},
+                {"status": 200, "json": fixture("summary.json")},
+                {"status": 200, "json": fixture("blocking_enabled.json")},
+                {"status": 200, "json": fixture("history.json")},
+                {"status": 200, "json": {"remote_addr": "172.17.0.1"}},
+                {"status": 200, "json": {"queries": []}},
+                {"status": 200, "json": fixture("recent_blocked.json"), "expect": {"path": "/api/stats/recent_blocked?count=10"}},
+            ]
+        )
+        result = self.run_cmd("status", http=http)
         self.assertEqual(result["recent_blocked"][0], "tracker.example.com")
+        self.assertEqual(result["recent_scope"], "network")
+
+    def test_an_odd_client_address_is_never_put_in_a_url(self):
+        http = FakeHttp(
+            [
+                {"status": 200, "json": fixture("auth_valid_passwordless.json")},
+                {"status": 200, "json": fixture("summary.json")},
+                {"status": 200, "json": fixture("blocking_enabled.json")},
+                {"status": 200, "json": fixture("history.json")},
+                {"status": 200, "json": {"remote_addr": "1.2.3.4&length=99999"}},
+                {"status": 200, "json": fixture("recent_blocked.json")},
+            ]
+        )
+        result = self.run_cmd("status", http=http)
+        self.assertEqual(result["recent_scope"], "network")
+        self.assertFalse(any("/api/queries" in c["url"] for c in http.calls))
+
+    def test_bar_poll_skips_the_blocked_lists(self):
+        http = FakeHttp(
+            [
+                {"status": 200, "json": fixture("auth_valid_passwordless.json")},
+                {"status": 200, "json": fixture("summary.json")},
+                {"status": 200, "json": fixture("blocking_enabled.json")},
+            ]
+        )
+        result = self.run_cmd("status", "--bar", http=http)
+        self.assertIsNone(result["recent_scope"])
 
     def test_ping_fails_when_blocking_endpoint_is_unavailable(self):
         http = FakeHttp(
@@ -443,7 +491,8 @@ class HelperTests(unittest.TestCase):
             {"status": 200, "json": fixture("summary.json")},
             {"status": 200, "json": fixture("blocking_enabled.json")},
             {"status": 200, "json": fixture("history.json")},
-            {"status": 200, "json": fixture("recent_blocked.json")},
+            {"status": 200, "json": fixture("info_client.json")},
+            {"status": 200, "json": fixture("queries_blocked.json")},
         ]
 
     def test_allow_adds_exact_domain_and_returns_full_status(self):
@@ -586,6 +635,8 @@ class HelperTests(unittest.TestCase):
                 {"status": 200, "json": fixture("summary.json")},
                 {"status": 200, "json": fixture("blocking_enabled.json")},
                 {"status": 200, "json": fixture("history.json")},
+                {"status": 200, "json": fixture("info_client.json")},
+                {"status": 200, "json": {"queries": [{"domain": "<b>x</b>"}, {"domain": 7}]}},
                 {
                     "status": 200,
                     "json": {

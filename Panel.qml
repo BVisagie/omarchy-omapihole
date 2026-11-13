@@ -756,7 +756,7 @@ Panel {
                             spacing: Style.space(4)
 
                             PanelSectionHeader {
-                                text: root.tr("panel.lastBlocked", "last blocked · click to copy")
+                                text: Model.blockedHeading(root.snapshot, root.loc)
                                 foreground: root.popupFg
                                 fontFamily: root.fontFamily
                             }
