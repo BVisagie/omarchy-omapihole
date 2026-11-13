@@ -16,6 +16,30 @@ var BAR_METRICS = ["percent", "rate", "queries"]
 var PAUSE_SECONDS = [30, 300, 900, 3600]
 var ALLOW_CONFIRM_MS = 4000
 
+// Text for people goes through `loc`, which the QML passes in:
+//   loc.tr(key, english)  -> the plugin's catalog (Commons.Translations)
+//   loc.num(value, places) -> Commons.I18n.formatNumber
+// Without it every function answers in English, which the tests check.
+function say(loc, key, english) {
+    return loc && typeof loc.tr === "function" ? loc.tr(key, english) : english
+}
+
+function num(loc, value, places) {
+    if (loc && typeof loc.num === "function") return loc.num(value, places)
+    var n = Number(value)
+    if (!isFinite(n)) return String(value)
+    return places === undefined ? String(n) : n.toFixed(places)
+}
+
+// "%1 blocked" with its arguments filled in; QML's arg() is not in Node.
+function fill(template) {
+    var args = arguments
+    return String(template).replace(/%(\d)/g, function (m, i) {
+        var k = Number(i)
+        return k < args.length ? String(args[k]) : m
+    })
+}
+
 function trim(value) {
     return String(value === null || value === undefined ? "" : value).replace(/^\s+|\s+$/g, "")
 }
@@ -133,12 +157,12 @@ function dashboardUrl(settings) {
     return cfg.url + "/admin/"
 }
 
-function compactNumber(value) {
+function compactNumber(value, loc) {
     var n = Number(value)
     if (!isFinite(n)) return "—"
     var sign = n < 0 ? "-" : ""
     n = Math.abs(n)
-    if (n < 1000) return sign + String(Math.round(n))
+    if (n < 1000) return sign + num(loc, Math.round(n))
     var units = ["", "k", "M", "B", "T"]
     var unit = 0
     var v = n
@@ -147,31 +171,32 @@ function compactNumber(value) {
         unit++
     }
     var digits = v >= 100 ? 0 : (v >= 10 ? 1 : 2)
-    var s = v.toFixed(digits)
-    s = s.replace(/(\.\d*?)0+$/, "$1").replace(/\.$/, "")
-    return sign + s + units[unit]
+    // Trim trailing zeros before localizing, so it works for any separator.
+    var trimmed = Number(v.toFixed(digits))
+    var places = String(trimmed).indexOf(".") >= 0 ? String(trimmed).split(".")[1].length : 0
+    return sign + num(loc, trimmed, places) + units[unit]
 }
 
-function formatPercent(value, decimals) {
+function formatPercent(value, decimals, loc) {
     var n = Number(value)
     if (!isFinite(n)) return "—"
     var places = decimals === undefined ? 1 : decimals
-    return n.toFixed(places) + "%"
+    return num(loc, n, places) + "%"
 }
 
-function formatBarPercent(value) {
+function formatBarPercent(value, loc) {
     var n = Number(value)
     if (!isFinite(n)) return "—"
-    return Math.round(n) + "%"
+    return num(loc, Math.round(n)) + "%"
 }
 
-function formatRate(frequency) {
+function formatRate(frequency, loc) {
     var n = Number(frequency)
     if (!isFinite(n)) return "—"
     var perMin = n * 60
-    if (perMin >= 10) return Math.round(perMin) + "/m"
-    var s = perMin.toFixed(1).replace(/\.0$/, "")
-    return s + "/m"
+    if (perMin >= 10) return num(loc, Math.round(perMin)) + "/m"
+    var rounded = Number(perMin.toFixed(1))
+    return num(loc, rounded, rounded % 1 === 0 ? 0 : 1) + "/m"
 }
 
 function pad2(n) {
@@ -179,14 +204,14 @@ function pad2(n) {
 }
 
 // "just now", "42s ago", "5m ago", "3h ago", "2d ago" for the freshness line.
-function formatAge(seconds) {
+function formatAge(seconds, loc) {
     var s = Math.floor(Number(seconds))
     if (!isFinite(s)) return ""
-    if (s < 5) return "just now"
-    if (s < 60) return s + "s ago"
-    if (s < 3600) return Math.floor(s / 60) + "m ago"
-    if (s < 86400) return Math.floor(s / 3600) + "h ago"
-    return Math.floor(s / 86400) + "d ago"
+    if (s < 5) return say(loc, "age.now", "just now")
+    if (s < 60) return fill(say(loc, "age.seconds", "%1s ago"), num(loc, s))
+    if (s < 3600) return fill(say(loc, "age.minutes", "%1m ago"), num(loc, Math.floor(s / 60)))
+    if (s < 86400) return fill(say(loc, "age.hours", "%1h ago"), num(loc, Math.floor(s / 3600)))
+    return fill(say(loc, "age.days", "%1d ago"), num(loc, Math.floor(s / 86400)))
 }
 
 // Helper errors are terse lowercase fragments; the panel shows them as text.
@@ -196,12 +221,12 @@ function sentence(text) {
     return s.charAt(0).toUpperCase() + s.substring(1)
 }
 
-function formatCountdown(seconds) {
+function formatCountdown(seconds, loc) {
     var s = Math.floor(Number(seconds))
     if (!isFinite(s) || s < 0) s = 0
     var m = Math.floor(s / 60)
     var r = s % 60
-    return m + ":" + pad2(r)
+    return num(loc, m) + ":" + num(loc, Math.floor(r / 10)) + num(loc, r % 10)
 }
 
 function remainingSeconds(snapshot, nowSec) {
@@ -237,24 +262,24 @@ function isAway(snapshot, origin) {
     return canonicalState(snapshot) === "offline" && isPrivateIPv4ApiOrigin(origin)
 }
 
-function barLabel(snapshot, settings, nowSec) {
+function barLabel(snapshot, settings, nowSec, loc) {
     var s = displayState(snapshot, nowSec)
     if (s === "unconfigured") return ""
-    if (s === "auth") return "auth"
+    if (s === "auth") return say(loc, "bar.auth", "auth")
     // Away from home is expected, not an alarm: the muted mark says enough.
     if (isAway(snapshot, coerceSettings(settings).url)) return ""
     if (s === "offline" || s === "failed") return "—"
-    if (s === "disabled") return "off"
+    if (s === "disabled") return say(loc, "bar.off", "off")
     if (s === "paused") {
         var rem = remainingSeconds(snapshot, nowSec)
-        return formatCountdown(Math.max(0, rem || 0))
+        return formatCountdown(Math.max(0, rem || 0), loc)
     }
     var metric = coerceSettings(settings).barMetric
     var queries = snapshot && snapshot.queries ? snapshot.queries : null
     if (!queries) return "—"
-    if (metric === "rate") return formatRate(queries.frequency)
-    if (metric === "queries") return compactNumber(queries.total)
-    return formatBarPercent(queries.percent_blocked)
+    if (metric === "rate") return formatRate(queries.frequency, loc)
+    if (metric === "queries") return compactNumber(queries.total, loc)
+    return formatBarPercent(queries.percent_blocked, loc)
 }
 
 function barColorRole(snapshot, nowSec) {
@@ -264,23 +289,27 @@ function barColorRole(snapshot, nowSec) {
     return "muted"
 }
 
-function headerStatus(snapshot, nowSec, origin) {
+function headerStatus(snapshot, nowSec, origin, loc) {
     var s = displayState(snapshot, nowSec)
-    if (s === "enabled") return "Blocking on"
-    if (s === "paused") return "Paused"
-    if (s === "disabled") return "Blocking off"
-    if (s === "auth") return "Auth failed"
+    if (s === "enabled") return say(loc, "status.enabled", "Blocking on")
+    if (s === "paused") return say(loc, "status.paused", "Paused")
+    if (s === "disabled") return say(loc, "status.disabled", "Blocking off")
+    if (s === "auth") return say(loc, "status.auth", "Auth failed")
     if (s === "offline")
-        return isPrivateIPv4ApiOrigin(origin) ? "Away from home" : "Offline"
-    if (s === "failed") return "Failed"
-    return "Not configured"
+        return isPrivateIPv4ApiOrigin(origin)
+            ? say(loc, "status.away", "Away from home")
+            : say(loc, "status.offline", "Offline")
+    if (s === "failed") return say(loc, "status.failed", "Failed")
+    return say(loc, "status.unconfigured", "Not configured")
 }
 
-function tooltipText(snapshot, settings, nowSec) {
+function tooltipText(snapshot, settings, nowSec, loc) {
     var s = canonicalState(snapshot)
     var cfg = coerceSettings(settings)
-    if (s === "unconfigured") return "OmaPihole: not configured. Click to set up."
-    if (isAway(snapshot, cfg.url)) return "Home Pi-hole is not reachable from this network"
+    if (s === "unconfigured")
+        return say(loc, "tooltip.unconfigured", "OmaPihole: not configured. Click to set up.")
+    if (isAway(snapshot, cfg.url))
+        return say(loc, "tooltip.away", "Home Pi-hole is not reachable from this network")
     if (snapshot && snapshot.error && (s === "offline" || s === "auth" || s === "failed"))
         return sentence(snapshot.error)
     var host = hostLabel(cfg.url)
@@ -288,18 +317,30 @@ function tooltipText(snapshot, settings, nowSec) {
     var lines = []
     if (host) lines.push(host)
     if (queries) {
-        lines.push(compactNumber(queries.total) + " queries (24h)")
-        lines.push(compactNumber(queries.blocked) + " blocked (24h)")
+        lines.push(fill(say(loc, "tooltip.queries", "%1 queries (24h)"), compactNumber(queries.total, loc)))
+        lines.push(fill(say(loc, "tooltip.blocked", "%1 blocked (24h)"), compactNumber(queries.blocked, loc)))
     }
     var recent = snapshot && snapshot.recent_blocked ? snapshot.recent_blocked : []
-    if (recent && recent.length > 0) lines.push("last " + String(recent[0]))
+    if (recent && recent.length > 0) lines.push(fill(say(loc, "tooltip.last", "last %1"), String(recent[0])))
     var shown = displayState(snapshot, nowSec)
     if (shown === "paused") {
         var rem = remainingSeconds(snapshot, nowSec)
-        lines.push("resumes in " + formatCountdown(Math.max(0, rem || 0)))
+        lines.push(fill(say(loc, "tooltip.resumes", "resumes in %1"), formatCountdown(Math.max(0, rem || 0), loc)))
     }
-    if (shown === "disabled") lines.push("blocking off")
+    if (shown === "disabled") lines.push(say(loc, "tooltip.off", "blocking off"))
     return lines.join("\n")
+}
+
+// The notice after Allow. The helper sends a code so the words can be
+// translated; its own message stays as the English diagnostic.
+function allowNotice(action, loc) {
+    if (!action) return ""
+    var domain = String(action.domain || "")
+    if (action.code === "allowed") return fill(say(loc, "notice.allowed", "Allowed %1"), domain)
+    if (action.code === "already") return fill(say(loc, "notice.alreadyAllowed", "%1 is already allowed"), domain)
+    if (action.code === "failed")
+        return fill(say(loc, "notice.allowFailed", "Could not allow %1: %2"), domain, String(action.message || ""))
+    return sentence(action.message)
 }
 
 function bucketHistory(history) {
@@ -553,6 +594,8 @@ if (typeof module !== "undefined") {
         barColorRole: barColorRole,
         headerStatus: headerStatus,
         tooltipText: tooltipText,
+        allowNotice: allowNotice,
+        fill: fill,
         bucketHistory: bucketHistory,
         recentBlocked: recentBlocked,
         unconfiguredSnapshot: unconfiguredSnapshot,

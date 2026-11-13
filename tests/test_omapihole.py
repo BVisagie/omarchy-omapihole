@@ -451,7 +451,10 @@ class HelperTests(unittest.TestCase):
         http = FakeHttp(self.allow_script(201, created))
         result = self.run_cmd("allow", "Ads.Example.com.", http=http)
         self.assertEqual(result["state"], "enabled")
-        self.assertEqual(result["action"], {"ok": True, "message": "allowed ads.example.com"})
+        self.assertEqual(
+            result["action"],
+            {"ok": True, "code": "allowed", "domain": "ads.example.com", "message": None},
+        )
         self.assertEqual(len(result["history"]), 6)
 
     def test_allow_duplicate_is_reported_not_failed(self):
@@ -469,13 +472,15 @@ class HelperTests(unittest.TestCase):
         http = FakeHttp(self.allow_script(201, dup))
         result = self.run_cmd("allow", "ads.example.com", http=http)
         self.assertEqual(result["state"], "enabled")
-        self.assertEqual(result["action"]["message"], "ads.example.com is already allowed")
+        self.assertEqual(result["action"]["code"], "already")
+        self.assertTrue(result["action"]["ok"])
 
     def test_allow_rejection_keeps_state(self):
         http = FakeHttp(self.allow_script(400, {"error": {"message": "Invalid domain"}}))
         result = self.run_cmd("allow", "ads.example.com", http=http)
         self.assertEqual(result["state"], "enabled")
         self.assertFalse(result["action"]["ok"])
+        self.assertEqual(result["action"]["code"], "failed")
         self.assertEqual(result["action"]["message"], "Invalid domain")
 
     def test_allow_refuses_non_domains(self):

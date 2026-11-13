@@ -720,7 +720,10 @@ def normalize_domain(value):
 
 
 def add_allow(ctx, domain):
-    """Add an exact allow entry. Returns a short notice; raises FailedError."""
+    """Add an exact allow entry. Returns "allowed" or "already".
+
+    Raises FailedError with the Pi-hole's reason when it refuses.
+    """
     payload = api(
         ctx,
         "POST",
@@ -735,19 +738,21 @@ def add_allow(ctx, domain):
             first = errors[0] if isinstance(errors[0], dict) else {}
             message = str(first.get("error") or first.get("message") or "rejected")
             if "unique" in message.lower():
-                return "%s is already allowed" % domain
-            raise FailedError("could not allow %s: %s" % (domain, message))
-    return "allowed %s" % domain
+                return "already"
+            raise FailedError(message)
+    return "allowed"
 
 
 def do_allow(ctx, domain):
     # An allowlist rejection says nothing about the Pi-hole's health, so it
     # rides along as `action` on a normal status rather than replacing the
     # state with "failed". Auth and offline errors still propagate.
+    # The panel words the notice from `code`; `message` is the Pi-hole's
+    # reason when it refused.
     try:
-        action = {"ok": True, "message": add_allow(ctx, domain)}
+        action = {"ok": True, "code": add_allow(ctx, domain), "domain": domain, "message": None}
     except FailedError as exc:
-        action = {"ok": False, "message": clean_text(exc.error)}
+        action = {"ok": False, "code": "failed", "domain": domain, "message": clean_text(exc.error)}
     result = collect_status(ctx, full=True)
     result["action"] = action
     return result

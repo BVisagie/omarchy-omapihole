@@ -17,6 +17,15 @@ BarWidget {
     }
 
     readonly property string helperPath: localPath("scripts/omapihole")
+
+    // The plugin's own strings, following Setup > Language live.
+    readonly property QtObject strings: Commons.Translations { directory: Qt.resolvedUrl("i18n") }
+    function tr(key, english) { return root.strings.t(key, english) }
+    // What Model.js takes to word and number things in the current language.
+    readonly property var loc: ({
+        tr: function (key, english) { return root.strings.t(key, english) },
+        num: function (value, places) { return Commons.I18n.formatNumber(value, places) }
+    })
     readonly property var coerced: Model.coerceSettings(root.settings)
     readonly property string apiOrigin: coerced.url
     readonly property string passwordFile: coerced.passwordFile
@@ -45,7 +54,7 @@ BarWidget {
     }
 
     readonly property string shownState: Model.displayState(snapshot, nowSec)
-    readonly property string pillLabel: Model.barLabel(snapshot, root.settings, nowSec)
+    readonly property string pillLabel: Model.barLabel(snapshot, root.settings, nowSec, root.loc)
     // The mark's knob sits right only while blocking is known to be on.
     // Paused/off slide it left (urgent); every "don't know" state is muted
     // and also left, since nothing is vouching for the hole.
@@ -56,7 +65,7 @@ BarWidget {
         if (colorRole === "muted") return Commons.Color.muted
         return root.bar ? root.bar.barForeground : Commons.Color.foreground
     }
-    readonly property string tooltipBody: Model.tooltipText(snapshot, root.settings, nowSec)
+    readonly property string tooltipBody: Model.tooltipText(snapshot, root.settings, nowSec, root.loc)
     readonly property bool stale: Model.isStale(snapshot)
     readonly property bool helperBusy: helperProc.running
     readonly property bool configured: apiOrigin !== ""
@@ -124,7 +133,7 @@ BarWidget {
         var s = Model.trim(text)
         if (!s) return
         Util.execArgv(["wl-copy", "--", s])
-        flash("copied " + s, true)
+        flash(Model.fill(tr("notice.copied", "Copied %1"), s), true)
     }
 
     function flash(text, ok) {
@@ -269,7 +278,7 @@ BarWidget {
             backoffUntil = 0
         }
         if (inFlight === "allow") {
-            if (result.action) flash(result.action.message, result.action.ok === true)
+            if (result.action) flash(Model.allowNotice(result.action, root.loc), result.action.ok === true)
             else if (result.error) flash(result.error, false)
         }
         // Dropped when the URL changed while this request was running.

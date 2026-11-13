@@ -396,3 +396,24 @@ test("rate-limit backoff steps 60, 120, then holds at 300", () => {
   assert.equal(Model.nextBackoff(120), 300);
   assert.equal(Model.nextBackoff(300), 300);
 });
+
+test("text and numbers go through loc when the QML passes one", () => {
+  const loc = {
+    tr: (key, english) => (key === "status.enabled" ? "Blokering til" : english),
+    num: (value, places) => (places === undefined ? String(value) : Number(value).toFixed(places)).replace(".", ",")
+  };
+  assert.equal(Model.headerStatus({ state: "enabled" }, 0, "", loc), "Blokering til");
+  assert.equal(Model.formatPercent(34.02, 1, loc), "34,0%");
+  assert.equal(Model.compactNumber(2104, loc), "2,1k");
+  assert.equal(Model.formatAge(300, loc), "5m ago");
+  assert.equal(Model.formatCountdown(65, loc), "1:05");
+});
+
+test("allow notices are worded from the helper's code", () => {
+  assert.equal(Model.allowNotice({ ok: true, code: "allowed", domain: "a.example" }), "Allowed a.example");
+  assert.equal(Model.allowNotice({ ok: true, code: "already", domain: "a.example" }), "a.example is already allowed");
+  assert.equal(
+    Model.allowNotice({ ok: false, code: "failed", domain: "a.example", message: "Invalid domain" }),
+    "Could not allow a.example: Invalid domain"
+  );
+});
