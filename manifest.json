@@ -78,7 +78,7 @@
         "min": 0,
         "max": 120,
         "step": 10,
-        "description": "How often the bar polls Pi-hole, 10–120 seconds, default 20. 0 turns timed polling off: the widget then asks only at start-up, when the panel opens, and when you refresh or act.",
+        "description": "How often the bar polls Pi-hole, 10–120 seconds, default 20. 0 turns timed polling off: the widget then asks only at start-up, when the panel opens, when you refresh or act, and once when a pause runs out.",
         "defaultValue": 20
       },
       {

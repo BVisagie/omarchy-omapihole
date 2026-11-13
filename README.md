@@ -102,7 +102,7 @@ omarchy bar set bvisagie.omapihole refreshSeconds 30 --json
 
 OmaPihole talks only to the Pi-hole you configure, through `curl`, limited to HTTP and HTTPS:
 
-- **Every `refreshSeconds`** (20 by default): blocking state and the 24-hour summary. Set `refreshSeconds` to `0` to stop timed polling; the widget then asks only at start-up, when the panel opens, and when you refresh, pause or allow.
+- **Every `refreshSeconds`** (20 by default): blocking state and the 24-hour summary. Set `refreshSeconds` to `0` to stop timed polling; the widget then asks only at start-up, when the panel opens, when you refresh, pause or allow, and once when a pause you set runs out, to confirm blocking is back.
 - **While the panel is open**, once a minute: the 24-hour history, this computer's address as the Pi-hole sees it and its recent blocked queries (or the network's, as a fallback), the Pi-hole's version information, and its warning count. The Pi-hole itself checks GitHub for new versions; OmaPihole never contacts anything else.
 - **On a 429** (rate limit), timed polls back off for 60, 120, then 300 seconds.
 

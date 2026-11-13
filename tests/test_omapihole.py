@@ -795,6 +795,51 @@ class HelperTests(unittest.TestCase):
         self.assertIsNone(result["updates"])
         self.assertIsNone(result["warnings"])
 
+    def test_an_oversized_or_odd_sid_is_never_stored_or_sent(self):
+        self.write_password()
+        login = fixture("auth_login_ok.json")
+        login["session"]["sid"] = "x" * 100000
+        http = FakeHttp(
+            [
+                {"status": 401, "json": fixture("auth_required.json")},
+                {"status": 200, "json": login},
+                {"status": 401, "json": fixture("auth_401_stale_sid.json")},
+                {"status": 401, "json": fixture("auth_required.json")},
+                {"status": 200, "json": login},
+                {"status": 401, "json": fixture("auth_401_stale_sid.json")},
+            ]
+        )
+        result = self.run_cmd("status", "--bar", http=http)
+        self.assertEqual(result["state"], "auth")
+        self.assertTrue(all("X-FTL-SID" not in c["headers"] for c in http.calls))
+        self.assertFalse(self.session_path.exists())
+
+    def test_non_finite_numbers_fall_back_instead_of_crashing(self):
+        inf = float("inf")
+        self.assertEqual(
+            self.mod.map_history({"history": [{"t": inf, "total": 1}, {"t": 5, "total": inf, "blocked": float("nan")}]}),
+            [{"t": 5, "total": 0, "blocked": 0}],
+        )
+        self.assertEqual(self.mod.map_gravity({"gravity": {"domains_being_blocked": inf, "last_update": -3}}),
+                         {"domains_being_blocked": 0, "last_update": 0})
+        self.assertEqual(self.mod.map_queries({"queries": {"total": inf, "percent_blocked": "nan"}})["total"], 0)
+        self.assertEqual(self.mod.map_blocking({"blocking": "disabled", "timer": inf}), ("disabled", False, None))
+        self.assertEqual(self.mod.map_blocking({"blocking": "disabled", "timer": 30.7}), ("paused", False, 30))
+
+    def test_a_rate_limit_on_a_panel_extra_stops_the_status(self):
+        http = FakeHttp(
+            [
+                {"status": 200, "json": fixture("auth_valid_passwordless.json")},
+                {"status": 200, "json": fixture("summary.json")},
+                {"status": 200, "json": fixture("blocking_enabled.json")},
+                {"status": 429, "json": fixture("auth_429_rate_limit.json")},
+            ]
+        )
+        result = self.run_cmd("status", http=http)
+        self.assertEqual(result["state"], "failed")
+        self.assertTrue(result["rate_limited"])
+        self.assertEqual(len(http.calls), 4)
+
     def test_usage_error_nonzero(self):
         buf = io.StringIO()
         with mock.patch("sys.stderr", buf), self.assertRaises(SystemExit) as raised:

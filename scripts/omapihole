@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import fcntl
 import json
+import math
 import os
 import re
 import stat
@@ -29,6 +30,8 @@ MAX_RESPONSE_BYTES = 1000000
 MAX_TEXT_CHARS = 200
 MAX_HISTORY_ROWS = 300
 MAX_DOMAINS = 10
+# FTL session IDs are short base64; anything else is not stored or sent.
+SID_RE = re.compile(r"^[A-Za-z0-9+/=_.-]{1,256}$")
 TWO_FA_MSG = "this Pi-hole has 2FA; use an app password, not the web password."
 DEFAULT_PASSWORD_FILE = "~/.config/omapihole/password"
 USAGE = "usage: omapihole status [--bar] | pause <seconds> | resume | allow <domain> | ping"
@@ -371,7 +374,7 @@ def read_session(ctx):
         return None
     origin = record.get("origin")
     sid = record.get("sid")
-    if isinstance(origin, str) and isinstance(sid, str) and sid:
+    if isinstance(origin, str) and isinstance(sid, str) and SID_RE.match(sid):
         return origin, sid
     return None
 
@@ -464,9 +467,7 @@ def session_sid(payload):
     if not isinstance(session, dict):
         return ""
     sid = session.get("sid")
-    if sid is None:
-        return ""
-    return str(sid)
+    return sid if isinstance(sid, str) and SID_RE.match(sid) else ""
 
 
 def authenticate(ctx, held_sid=""):
@@ -554,6 +555,23 @@ def api(ctx, method, path, body=None, retried=False):
     return payload
 
 
+def whole(value, default=0, limit=10**15):
+    """A non-negative integer from network JSON, or default.
+
+    JSON can carry 1e309 (infinity), NaN or huge values; int() of those
+    raises or yields nonsense, so they fall back to the default.
+    """
+    if isinstance(value, bool) or value is None:
+        return default
+    try:
+        n = float(value)
+    except (TypeError, ValueError):
+        return default
+    if not math.isfinite(n) or n < 0 or n > limit:
+        return default
+    return int(n)
+
+
 def map_blocking(payload):
     raw = payload.get("blocking") if isinstance(payload, dict) else None
     timer = payload.get("timer") if isinstance(payload, dict) else None
@@ -566,10 +584,8 @@ def map_blocking(payload):
     else:
         raise FailedError("unexpected blocking status")
     remaining = None
-    if isinstance(timer, bool):
-        remaining = None
-    elif isinstance(timer, (int, float)) and timer > 0:
-        remaining = int(timer)
+    if isinstance(timer, (int, float)) and not isinstance(timer, bool):
+        remaining = whole(timer, None, limit=366 * 86400) or None
     if mode == "enabled":
         return "enabled", True, remaining if remaining else None
     if remaining:
@@ -589,7 +605,7 @@ def map_queries(payload):
             n = float(value)
         except (TypeError, ValueError):
             return 0
-        return n
+        return n if math.isfinite(n) and abs(n) <= 1e15 else 0
 
     return {
         "total": int(num("total")),
@@ -606,17 +622,9 @@ def map_gravity(payload):
         return None
     domains = gravity.get("domains_being_blocked")
     last = gravity.get("last_update")
-    try:
-        domains_n = int(domains)
-    except (TypeError, ValueError):
-        domains_n = 0
-    try:
-        last_n = int(last)
-    except (TypeError, ValueError):
-        last_n = 0
     return {
-        "domains_being_blocked": domains_n,
-        "last_update": last_n,
+        "domains_being_blocked": whole(domains),
+        "last_update": whole(last),
     }
 
 
@@ -628,14 +636,10 @@ def map_history(payload):
     for row in rows[-MAX_HISTORY_ROWS:]:
         if not isinstance(row, dict):
             continue
-        t = row.get("t", row.get("timestamp"))
-        try:
-            t_n = int(t)
-            total = int(row.get("total") or 0)
-            blocked = int(row.get("blocked") or 0)
-        except (TypeError, ValueError):
+        t_n = whole(row.get("t", row.get("timestamp")), None)
+        if t_n is None:
             continue
-        out.append({"t": t_n, "total": total, "blocked": blocked})
+        out.append({"t": t_n, "total": whole(row.get("total")), "blocked": whole(row.get("blocked"))})
     return out
 
 
@@ -677,9 +681,8 @@ def collect_status(ctx, full):
     if full:
         try:
             history = map_history(api(ctx, "GET", "/api/history"))
-        except AuthError:
-            raise
-        except HelperError:
+        except HelperError as exc:
+            stop_on(exc)
             history = None
         recent, scope = recent_blocks(ctx)
         updates = optional(ctx, "/api/info/version", map_updates)
@@ -700,13 +703,22 @@ def collect_status(ctx, full):
     )
 
 
+def stop_on(exc):
+    """A panel extra may fail quietly, except for auth or a rate limit.
+
+    Those end the whole status, so the panel shows setup or the widget
+    backs off instead of making more requests into the limit.
+    """
+    if isinstance(exc, AuthError) or exc.extra.get("rate_limited"):
+        raise exc
+
+
 def optional(ctx, path, mapper):
     """A panel extra: its failure must not fail the status."""
     try:
         return mapper(api(ctx, "GET", path))
-    except AuthError:
-        raise
-    except HelperError:
+    except HelperError as exc:
+        stop_on(exc)
         return None
 
 
@@ -771,15 +783,12 @@ def recent_blocks(ctx):
             here = map_blocked_queries(api(ctx, "GET", path))
             if here:
                 return here, "here"
-    except AuthError:
-        raise
-    except HelperError:
-        pass
+    except HelperError as exc:
+        stop_on(exc)
     try:
         network = map_recent_blocked(api(ctx, "GET", "/api/stats/recent_blocked?count=10"))
-    except AuthError:
-        raise
-    except HelperError:
+    except HelperError as exc:
+        stop_on(exc)
         return [], None
     return network, "network" if network else None
 

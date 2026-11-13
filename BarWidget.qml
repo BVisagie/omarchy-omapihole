@@ -305,6 +305,8 @@ BarWidget {
 
     function drainQueue() {
         var queue = pendingActions
+        // A timed poll queued before a 429 answer waits out the backoff too.
+        while (queue.length > 0 && queue[0].timed === true && !timedPollAllowed()) queue = queue.slice(1)
         pendingActions = queue.length > 1 ? queue.slice(1) : []
         inFlight = ""
         inFlightOrigin = ""
@@ -401,7 +403,7 @@ BarWidget {
         running: root.configured && root.refreshSeconds > 0
         repeat: true
         triggeredOnStart: true
-        onTriggered: if (root.isPrimary() && root.timedPollAllowed()) root.enqueue({ type: "bar" })
+        onTriggered: if (root.isPrimary() && root.timedPollAllowed()) root.enqueue({ type: "bar", timed: true })
     }
 
     Timer {
@@ -409,7 +411,7 @@ BarWidget {
         interval: 60000
         running: root.opened && root.configured && root.refreshSeconds > 0
         repeat: true
-        onTriggered: if (root.timedPollAllowed()) root.enqueue({ type: "full" })
+        onTriggered: if (root.timedPollAllowed()) root.enqueue({ type: "full", timed: true })
     }
 
     Timer {
