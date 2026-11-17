@@ -32,6 +32,10 @@ Panel {
     // wrong; otherwise the header gear opens it on demand.
     readonly property bool needsSetup: shownState === "unconfigured" || shownState === "auth"
     readonly property bool showSetup: needsSetup || settingsOpen
+    // A writable text field reads the clipboard every time it changes (Qt's
+    // canPaste check), so the setup fields stay read-only unless the form is
+    // on screen.
+    readonly property bool fieldsEditable: opened && showSetup
     readonly property bool canControl: shownState === "enabled" || shownState === "paused"
         || shownState === "disabled"
     readonly property bool awayFromHome: Model.isAway(snapshot, apiOrigin)
@@ -523,6 +527,7 @@ Panel {
 
                         TextField {
                             id: urlField
+                            readOnly: !root.fieldsEditable
                             width: parent.width
                             placeholderText: "https://pi.hole"
                             foreground: root.popupFg
@@ -543,6 +548,7 @@ Panel {
 
                         TextField {
                             id: passwordField
+                            readOnly: !root.fieldsEditable
                             width: parent.width
                             placeholderText: Model.DEFAULT_PASSWORD_FILE
                             foreground: root.popupFg
@@ -563,6 +569,7 @@ Panel {
 
                         TextField {
                             id: dashboardField
+                            readOnly: !root.fieldsEditable
                             width: parent.width
                             placeholderText: root.tr("setup.dashboardPlaceholder", "defaults to URL + /admin/")
                             foreground: root.popupFg
@@ -583,6 +590,7 @@ Panel {
 
                         TextField {
                             id: caField
+                            readOnly: !root.fieldsEditable
                             width: parent.width
                             placeholderText: root.tr("setup.caFilePlaceholder", "PEM file that signed the Pi-hole's HTTPS certificate")
                             foreground: root.popupFg
