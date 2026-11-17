@@ -32,6 +32,7 @@ All notable changes to OmaPihole. The format follows [Keep a Changelog](https://
 
 - `curl` is limited to HTTP and HTTPS and to 1 MB per response, and a URL with any other scheme is refused.
 - Blocked domains, history and error text from the Pi-hole are validated and bounded before they reach the panel.
+- The setup fields are read-only unless the panel is open and the setup form is showing. A writable field makes the shell read every new clipboard offer, even one never pasted.
 
 ## [0.2.0] - 2026-10-06
 

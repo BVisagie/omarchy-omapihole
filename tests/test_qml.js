@@ -50,3 +50,14 @@ test("vector shapes render with CurveRenderer, not a multisampled layer", () => 
     assert.doesNotMatch(code, /layer\.(enabled|samples)/, `${name} renders a shape through a layer`);
   }
 });
+
+test("text fields are read-only while the setup form is hidden", () => {
+  for (const name of files) {
+    const code = source(name);
+    const fields = code.match(/\bTextField\s*\{[^}]*\}/g) || [];
+    for (const field of fields) {
+      assert.match(field, /readOnly:\s*!root\.fieldsEditable/, `${name} has a TextField that is always writable`);
+    }
+  }
+  assert.match(source("Panel.qml"), /fieldsEditable:\s*opened && showSetup/);
+});
