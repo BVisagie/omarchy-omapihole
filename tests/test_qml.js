@@ -68,3 +68,11 @@ test("setup fields are read-only while the setup form is hidden", () => {
   }
   assert.match(source("Panel.qml"), /fieldsEditable:\s*opened && showSetup/);
 });
+
+test("writes carry the settings in force when they were asked for", () => {
+  const code = source("BarWidget.qml");
+  for (const type of ["pause", "resume", "allow"]) {
+    assert.match(code, new RegExp(`enqueue\\(\\{ type: "${type}"[^}]*boundEnv: helperEnv\\(null\\) \\}\\)`), `${type} is not bound`);
+  }
+  assert.match(code, /var env = action\.boundEnv \|\| helperEnv\(action\)/);
+});

@@ -308,6 +308,21 @@ test("queueAction never lets a read displace a waiting write", () => {
   assert.equal(Model.isWriteAction({ type: "ping" }), true);
 });
 
+test("queued writes for different hosts never replace each other", () => {
+  const envA = { OMAPIHOLE_URL: "http://a.lan" };
+  const envB = { OMAPIHOLE_URL: "http://b.lan" };
+  const pauseA = { type: "pause", seconds: 30, boundEnv: envA };
+  const pauseB = { type: "pause", seconds: 60, boundEnv: envB };
+  const resumeA = { type: "resume", boundEnv: envA };
+  const allowA = { type: "allow", domain: "x.example", boundEnv: envA };
+  const allowB = { type: "allow", domain: "x.example", boundEnv: envB };
+  // Review of 499bdac: a pause for A waiting while B is saved still goes to A.
+  assert.deepEqual(Model.queueAction([pauseA], pauseB), [pauseA, pauseB]);
+  assert.deepEqual(Model.queueAction([pauseA, pauseB], resumeA), [pauseB, resumeA]);
+  assert.deepEqual(Model.queueAction([allowA], allowB), [allowA, allowB]);
+  assert.deepEqual(Model.queueAction([allowA], { ...allowA }), [{ ...allowA }]);
+});
+
 test("confirmed allows are independent and never coalesced away", () => {
   const a = { type: "allow", domain: "a.example" };
   const b = { type: "allow", domain: "b.example" };
