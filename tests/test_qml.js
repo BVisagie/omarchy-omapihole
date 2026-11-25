@@ -58,6 +58,8 @@ test("text entry never uses TextInput, which reads the clipboard on every change
     assert.doesNotMatch(source(name), /\b(TextField|TextInput)\s*\{/, `${name} uses a TextInput-based field`);
   }
   assert.match(source("SetupField.qml"), /^TextArea\s*\{/m);
+  // A text area takes Tab as text unless KeyNavigation runs first.
+  assert.match(source("SetupField.qml"), /KeyNavigation\.priority:\s*KeyNavigation\.BeforeItem/);
 });
 
 test("setup fields are read-only while the setup form is hidden", () => {

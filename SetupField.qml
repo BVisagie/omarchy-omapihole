@@ -34,7 +34,9 @@ TextArea {
     topPadding: Style.spacing.inputPaddingY + Border.top(_borderSpec)
     bottomPadding: Style.spacing.inputPaddingY + Border.bottom(_borderSpec)
 
-    // One line: Enter submits, and a pasted line break is dropped.
+    // One line: Enter submits, Tab moves on, and a pasted line break is
+    // dropped. A text area would otherwise take Tab as text.
+    KeyNavigation.priority: KeyNavigation.BeforeItem
     Keys.onReturnPressed: (event) => { event.accepted = true; root.accepted() }
     Keys.onEnterPressed: (event) => { event.accepted = true; root.accepted() }
     onTextChanged: {
