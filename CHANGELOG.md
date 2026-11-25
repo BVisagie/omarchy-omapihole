@@ -27,7 +27,7 @@ All notable changes to OmaPihole. The format follows [Keep a Changelog](https://
 - After a URL change, or when **Test connection** checked a draft URL, the saved session ID was sent to the other host. Sessions are now tied to their host, and **Test connection** uses a throwaway session.
 - A valid saved session let **Test connection** pass with a wrong password file.
 - The same blocked domain could be listed more than once.
-- A pause, resume or allow waiting behind another request ran against the settings saved when it started, so saving another host in the meantime sent it to that host. It now goes to the host it was asked for.
+- A pause, resume or allow that waited behind another request used the settings saved by the time it ran, so saving another host meanwhile sent it to that host. It now goes to the host it was asked for.
 
 ### Security
 
