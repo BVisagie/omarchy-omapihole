@@ -27,12 +27,13 @@ All notable changes to OmaPihole. The format follows [Keep a Changelog](https://
 - After a URL change, or when **Test connection** checked a draft URL, the saved session ID was sent to the other host. Sessions are now tied to their host, and **Test connection** uses a throwaway session.
 - A valid saved session let **Test connection** pass with a wrong password file.
 - The same blocked domain could be listed more than once.
+- A pause, resume or allow that waited behind another request used the settings saved by the time it ran, so saving another host meanwhile sent it to that host. It now goes to the host it was asked for.
 
 ### Security
 
 - `curl` is limited to HTTP and HTTPS and to 1 MB per response, and a URL with any other scheme is refused.
 - Blocked domains, history and error text from the Pi-hole are validated and bounded before they reach the panel.
-- The setup fields are read-only unless the panel is open and the setup form is showing. A writable field makes the shell read every new clipboard offer, even one never pasted.
+- The setup fields never read the clipboard until you paste. Before Qt 6.12.1, a writable Qt text field reads every new clipboard offer, even one never pasted; the fields are now built on a text area, which does not, and stay read-only unless the setup form is showing.
 
 ## [0.2.0] - 2026-10-06
 

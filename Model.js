@@ -551,11 +551,17 @@ function isWriteAction(action) {
 }
 
 // Actions of the same kind where only the latest one matters.
+// Writes bound to different hosts are independent.
 function supersedes(a, b) {
     var blocking = { pause: 1, resume: 1 }
-    if (blocking[a.type] && blocking[b.type]) return true
     if (a.type === "ping" && b.type === "ping") return true
+    if (boundOrigin(a) !== boundOrigin(b)) return false
+    if (blocking[a.type] && blocking[b.type]) return true
     return a.type === "allow" && b.type === "allow" && a.domain === b.domain
+}
+
+function boundOrigin(action) {
+    return action.boundEnv ? String(action.boundEnv.OMAPIHOLE_URL || "") : ""
 }
 
 // The helper runs one action at a time; the rest wait here, in order.

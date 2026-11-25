@@ -51,13 +51,30 @@ test("vector shapes render with CurveRenderer, not a multisampled layer", () => 
   }
 });
 
-test("text fields are read-only while the setup form is hidden", () => {
+test("text entry never uses TextInput, which reads the clipboard on every change", () => {
+  // Before Qt 6.12.1 a writable TextInput (and TextField, built on it) fetches
+  // the clipboard text on each clipboard change; TextEdit checks formats only.
   for (const name of files) {
-    const code = source(name);
-    const fields = code.match(/\bTextField\s*\{[^}]*\}/g) || [];
-    for (const field of fields) {
-      assert.match(field, /readOnly:\s*!root\.fieldsEditable/, `${name} has a TextField that is always writable`);
-    }
+    assert.doesNotMatch(source(name), /\b(TextField|TextInput)\s*\{/, `${name} uses a TextInput-based field`);
+  }
+  assert.match(source("SetupField.qml"), /^TextArea\s*\{/m);
+  // A text area takes Tab as text unless KeyNavigation runs first.
+  assert.match(source("SetupField.qml"), /KeyNavigation\.priority:\s*KeyNavigation\.BeforeItem/);
+});
+
+test("setup fields are read-only while the setup form is hidden", () => {
+  const fields = source("Panel.qml").match(/\bSetupField\s*\{[^}]*\}/g) || [];
+  assert.equal(fields.length, 4);
+  for (const field of fields) {
+    assert.match(field, /readOnly:\s*!root\.fieldsEditable/, "a SetupField is always writable");
   }
   assert.match(source("Panel.qml"), /fieldsEditable:\s*opened && showSetup/);
+});
+
+test("writes carry the settings in force when they were asked for", () => {
+  const code = source("BarWidget.qml");
+  for (const type of ["pause", "resume", "allow"]) {
+    assert.match(code, new RegExp(`enqueue\\(\\{ type: "${type}"[^}]*boundEnv: helperEnv\\(null\\) \\}\\)`), `${type} is not bound`);
+  }
+  assert.match(code, /var env = action\.boundEnv \|\| helperEnv\(action\)/);
 });

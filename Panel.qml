@@ -32,9 +32,8 @@ Panel {
     // wrong; otherwise the header gear opens it on demand.
     readonly property bool needsSetup: shownState === "unconfigured" || shownState === "auth"
     readonly property bool showSetup: needsSetup || settingsOpen
-    // A writable text field reads the clipboard every time it changes (Qt's
-    // canPaste check), so the setup fields stay read-only unless the form is
-    // on screen.
+    // SetupField avoids TextInput's clipboard read (see SetupField.qml); the
+    // fields also stay read-only unless the form is on screen.
     readonly property bool fieldsEditable: opened && showSetup
     readonly property bool canControl: shownState === "enabled" || shownState === "paused"
         || shownState === "disabled"
@@ -525,7 +524,7 @@ Panel {
                             font.bold: true
                         }
 
-                        TextField {
+                        SetupField {
                             id: urlField
                             readOnly: !root.fieldsEditable
                             width: parent.width
@@ -546,7 +545,7 @@ Panel {
                             font.bold: true
                         }
 
-                        TextField {
+                        SetupField {
                             id: passwordField
                             readOnly: !root.fieldsEditable
                             width: parent.width
@@ -567,7 +566,7 @@ Panel {
                             font.bold: true
                         }
 
-                        TextField {
+                        SetupField {
                             id: dashboardField
                             readOnly: !root.fieldsEditable
                             width: parent.width
@@ -588,7 +587,7 @@ Panel {
                             font.bold: true
                         }
 
-                        TextField {
+                        SetupField {
                             id: caField
                             readOnly: !root.fieldsEditable
                             width: parent.width

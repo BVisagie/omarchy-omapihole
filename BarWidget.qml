@@ -117,18 +117,18 @@ BarWidget {
 
     function pause(seconds) {
         if (!configured) return
-        enqueue({ type: "pause", seconds: seconds })
+        enqueue({ type: "pause", seconds: seconds, boundEnv: helperEnv(null) })
     }
 
     function resume() {
         if (!configured) return
-        enqueue({ type: "resume" })
+        enqueue({ type: "resume", boundEnv: helperEnv(null) })
     }
 
     function allow(domain) {
         var clean = Model.normalizeDomain(domain)
         if (!configured || !clean) return
-        enqueue({ type: "allow", domain: clean })
+        enqueue({ type: "allow", domain: clean, boundEnv: helperEnv(null) })
     }
 
     function copyText(text) {
@@ -264,7 +264,9 @@ BarWidget {
         else if (action.type === "allow") argv = [helperPath, "allow", String(action.domain)]
         else if (action.type === "ping") argv = [helperPath, "ping"]
         else return
-        var env = helperEnv(action)
+        // A write runs against the settings in force when it was asked for,
+        // even if another host was saved while it waited in the queue.
+        var env = action.boundEnv || helperEnv(action)
         inFlight = action.type
         inFlightOrigin = env.OMAPIHOLE_URL
         helperProc.command = argv
