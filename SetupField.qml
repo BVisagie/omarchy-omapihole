@@ -34,17 +34,11 @@ TextArea {
     topPadding: Style.spacing.inputPaddingY + Border.top(_borderSpec)
     bottomPadding: Style.spacing.inputPaddingY + Border.bottom(_borderSpec)
 
-    // One line: Enter submits, Tab moves on, and a pasted line break is
-    // dropped. A text area would otherwise take Tab as text.
+    // One line: Enter submits and Tab moves on. A text area would otherwise
+    // take both as text.
     KeyNavigation.priority: KeyNavigation.BeforeItem
     Keys.onReturnPressed: (event) => { event.accepted = true; root.accepted() }
     Keys.onEnterPressed: (event) => { event.accepted = true; root.accepted() }
-    onTextChanged: {
-        if (!/[\r\n\t]/.test(text)) return
-        var cursor = text.slice(0, cursorPosition).replace(/[\r\n\t]+/g, "").length
-        text = text.replace(/[\r\n\t]+/g, "")
-        cursorPosition = cursor
-    }
 
     background: BorderSurface {
         color: Style.controlFill(root.activeFocus, root._hot, root.foreground, root.accent)
